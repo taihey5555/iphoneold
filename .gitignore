@@ -1,0 +1,11 @@
+.env
+config.yaml
+
+# local runtime artifacts
+logs/
+data/*.db
+
+# python cache
+.pytest_cache/
+__pycache__/
+*.pyc

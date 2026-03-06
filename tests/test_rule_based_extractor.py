@@ -1,0 +1,52 @@
+from datetime import datetime, timezone
+
+from app.extractors.rule_based import RISK_SCORE_WEIGHTS, RuleBasedExtractor
+from app.models import RawListing
+
+
+def _raw(title: str, desc: str) -> RawListing:
+    return RawListing(
+        source="example_market",
+        item_url="https://example.com/item/1",
+        title=title,
+        description=desc,
+        listed_price=50000,
+        shipping_fee=1000,
+        posted_at=None,
+        seller_name="seller_a",
+        image_urls=[],
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+
+def test_normalization_extracts_main_fields():
+    item = _raw(
+        "iPhone 14 128GB ミッドナイト SIMフリー",
+        "docomo購入 バッテリー 91% 判定○",
+    )
+    norm = RuleBasedExtractor().extract(item)
+    assert norm.model_name == "iPhone 14"
+    assert norm.storage_gb == 128
+    assert norm.color == "ミッドナイト"
+    assert norm.sim_free_flag is True
+    assert norm.battery_health == 91
+    assert norm.network_restriction_status == "ok"
+
+
+def test_risk_word_detection_and_score_table():
+    item = _raw(
+        "iPhone 13 128GB",
+        "face id不可 非純正ディスプレイ 充電不良 修理歴あり アクティベーションロック",
+    )
+    norm = RuleBasedExtractor().extract(item)
+    expected_flags = {
+        "face_id_not_working",
+        "non_genuine_display",
+        "charging_issue",
+        "repair_history",
+        "activation_lock_risk",
+        "network_restriction_unknown",
+    }
+    assert expected_flags.issubset(set(norm.risk_flags))
+    expected_score = sum(RISK_SCORE_WEIGHTS[f] for f in expected_flags)
+    assert norm.risk_score == expected_score

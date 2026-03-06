@@ -72,10 +72,48 @@ python -m app.main run-once --config config.yaml --env .env
 `config.yaml` のデフォルトは低頻度アクセスです:
 - `request_interval_seconds: 8.0`
 - `max_detail_per_listing_page: 3`
+- `max_notifications_per_run: 3`
+- `notification_mode: detailed` (`concise` で短文通知)
 
 ## テスト
 ```bash
 pytest -q
+```
+
+## review_status 運用コマンド
+更新:
+```bash
+python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status good
+```
+
+一覧 (recent):
+```bash
+python -m app.main review-status list --limit 20
+python -m app.main review-status list --source mercari_public --status pending --limit 30
+python -m app.main review-status list --format csv --limit 50
+python -m app.main review-status list --format json --status good --limit 20
+```
+
+集計 (summary):
+```bash
+python -m app.main review-status summary
+python -m app.main review-status summary --source mercari_public
+python -m app.main review-status summary --status good --format json
+python -m app.main review-status summary --format tsv --output reports/review_summary.tsv
+```
+
+source別分析:
+```bash
+python -m app.main review-status summary --format json
+python -m app.main review-status summary --source mercari_public --format tsv
+python -m app.main review-status summary --timeseries daily --format tsv
+python -m app.main review-status summary --timeseries weekly --format csv --output reports/review_weekly.csv
+```
+
+出力保存 (--output):
+```bash
+python -m app.main review-status list --format csv --limit 100 --output reports/recent_items.csv
+python -m app.main review-status list --format json --status good --output reports/good_items.json
 ```
 
 ## cron 実行例
@@ -99,4 +137,19 @@ pytest -q
 - HTMLセレクタの回帰テスト拡充
 - `LLMExtractor` の provider 実装 (qwen/deepseek/openai)
 - メトリクス出力やヘルスチェック追加
+
+## 現在のMVPの限界
+- メルカリはフロント変更頻度が高く、セレクタ/JSON-LD依存のため将来の破損余地がある
+- 価格推定はルールベースで、相場急変や季節性を十分反映しない
+- `risk_flags` は文面依存のため、出品者の表現ゆれに対して誤判定の余地がある
+- 類似重複抑制はキー近似（モデル/容量/価格帯）であり、完全一致保証ではない
+- 動的取得は遅く、環境依存の失敗（タイムアウト・ブラウザ依存）が発生しうる
+
+## 推奨運用フロー
+1. `run-once` 実行後、通知を利益順で確認する
+2. 通知文の `粗利根拠` と `risk内訳` を見て一次判断する
+3. 実際の商品ページでIMEI状態・付属品・写真整合性を最終確認する
+4. 仕入れ判断結果を `review_status` で記録する
+   - 例: `pending` / `buy_candidate` / `skip` / `bought` / `false_positive`
+5. 週次で `false_positive` を見直し、`notification.risk_priority_weights` と閾値を調整する
 # iphoneold

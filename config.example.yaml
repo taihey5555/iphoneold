@@ -1,0 +1,76 @@
+app:
+  timezone: "Asia/Tokyo"
+  min_profit_yen: 3000
+  max_risk_score: 4
+  duplicate_window_minutes: 180
+  fetch_timeout_seconds: 25
+  request_interval_seconds: 8.0
+  use_dynamic_fetch: true
+  db_path: "data/monitor.db"
+  max_detail_per_listing_page: 3
+  max_notifications_per_run: 3
+  notification_mode: "detailed"  # detailed | concise
+
+scoring:
+  selling_fee_rate: 0.1
+  shipping_cost: 750
+  base_risk_buffer: 1000
+  condition_flag_buffer: 600
+  risk_flag_buffer: 800
+  sim_free_bonus: 1500
+  carrier_penalty: 1000
+  carrier_penalties:
+    docomo: 1200
+    au: 1000
+    softbank: 1000
+    rakuten: 600
+  sim_locked_penalty: 1800
+  sim_unknown_penalty: 700
+  unknown_carrier_penalty: 500
+  battery_high_threshold: 90
+  battery_high_bonus: 1200
+  battery_low_threshold: 80
+  battery_low_penalty: 3500
+  battery_bonus_95: 1800
+  battery_bonus_85: 500
+  battery_penalty_79: 1500
+
+notification:
+  risk_priority_weights:
+    network_restriction_unknown: -1200
+    battery_service: -600
+    repair_history: -900
+    non_genuine_display: -1300
+    camera_issue: -1500
+    charging_issue: -1300
+    sim_issue: -1400
+    face_id_not_working: -1800
+    activation_lock_risk: -3000
+    description_inconsistency: -700
+  never_notify_flags:
+    - activation_lock_risk
+  network_unknown_only_extra_profit: 2500
+  network_unknown_only_max_risk_score: 2
+
+targets:
+  - model: "iPhone 13"
+    storage_gb: 128
+    keywords: ["iphone 13 128", "iphone13 128"]
+    expected_resale_base: 63000
+  - model: "iPhone 14"
+    storage_gb: 128
+    keywords: ["iphone 14 128", "iphone14 128"]
+    expected_resale_base: 76000
+  - model: "iPhone 15"
+    storage_gb: 128
+    keywords: ["iphone 15 128", "iphone15 128"]
+    expected_resale_base: 93000
+
+sources:
+  - name: "mercari_public"
+    enabled: true
+    listing_urls:
+      - "https://jp.mercari.com/search?keyword=iPhone%2013%20128GB&status=on_sale"
+      - "https://jp.mercari.com/search?keyword=iPhone%2014%20128GB&status=on_sale"
+      - "https://jp.mercari.com/search?keyword=iPhone%2015%20128GB&status=on_sale"
+    parser: "mercari_public"

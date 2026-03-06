@@ -1,0 +1,27 @@
+[project]
+name = "used-smartphone-monitor"
+version = "0.1.0"
+description = "Used smartphone listing monitor bot"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12.3",
+  "pydantic>=2.6.4",
+  "python-dotenv>=1.0.1",
+  "pyyaml>=6.0.1",
+  "requests>=2.31.0",
+  "scrapling>=0.2.9",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.2",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"

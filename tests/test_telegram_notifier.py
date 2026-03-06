@@ -1,0 +1,55 @@
+from datetime import datetime, timezone
+
+from app.models import NormalizedFields, RawListing, ScoredItem
+from app.notifiers.telegram import TelegramNotifier
+
+
+def _item() -> ScoredItem:
+    return ScoredItem(
+        raw=RawListing(
+            source="mercari_public",
+            item_url="https://jp.mercari.com/item/m123",
+            title="iPhone 14 128GB SIMフリー",
+            description="",
+            listed_price=59000,
+            shipping_fee=0,
+            posted_at=None,
+            seller_name="seller",
+            image_urls=[],
+            fetched_at=datetime.now(timezone.utc),
+        ),
+        normalized=NormalizedFields(
+            model_name="iPhone 14",
+            storage_gb=128,
+            risk_flags=["network_restriction_unknown"],
+            risk_score_breakdown={"network_restriction_unknown": 2},
+            risk_score=2,
+        ),
+        expected_resale_price=76000,
+        estimated_profit=6500,
+        purchase_price=59000,
+        selling_fee=7600,
+        shipping_cost=750,
+        risk_buffer=2150,
+        resale_price_reasons=["base=76000(iPhone 14 128GB)"],
+    )
+
+
+def test_detailed_message_contains_breakdown():
+    notifier = TelegramNotifier(mode="detailed")
+    msg = notifier.build_message(_item(), "notified_reason(profit>=3000, risk<=4, network_restriction_unknown)")
+    assert "粗利根拠:" in msg
+    assert "危険度スコア内訳:" in msg
+    assert "通知理由:" in msg
+    assert "ネットワーク制限不明" in msg
+    assert "想定粗利>=" in msg
+    assert "危険度スコア<=" in msg
+
+
+def test_concise_message_is_short():
+    notifier = TelegramNotifier(mode="concise")
+    msg = notifier.build_message(_item(), "notified_reason(profit_current=6500,risk_threshold=4)")
+    assert "粗利根拠:" not in msg
+    assert "危険度スコア内訳:" not in msg
+    assert "通知理由:" in msg
+    assert "危険度スコア" in msg
