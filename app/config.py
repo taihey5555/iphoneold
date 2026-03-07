@@ -82,6 +82,8 @@ class NotificationConfig:
     never_notify_flags: list[str] = field(default_factory=lambda: ["activation_lock_risk"])
     network_unknown_only_extra_profit: int = 2500
     network_unknown_only_max_risk_score: int = 2
+    reprice_min_drop_yen: int = 1000
+    reprice_min_drop_rate: float = 0.03
 
 
 @dataclass(frozen=True)

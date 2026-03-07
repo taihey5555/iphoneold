@@ -2,7 +2,7 @@ app:
   timezone: "Asia/Tokyo"
   min_profit_yen: 3000
   max_risk_score: 4
-  duplicate_window_minutes: 180
+  duplicate_window_minutes: 1440
   fetch_timeout_seconds: 25
   request_interval_seconds: 8.0
   use_dynamic_fetch: true
@@ -51,6 +51,8 @@ notification:
     - activation_lock_risk
   network_unknown_only_extra_profit: 2500
   network_unknown_only_max_risk_score: 2
+  reprice_min_drop_yen: 1000
+  reprice_min_drop_rate: 0.03
 
 targets:
   - model: "iPhone 13"

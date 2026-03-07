@@ -198,3 +198,43 @@ def test_notified_reason_logged(tmp_path, caplog):
         svc._send_notifications([item], stats)
     assert stats.notified == 1
     assert any("candidate notified:" in rec.message and "notified_reason=" in rec.message for rec in caplog.records)
+
+
+def test_reprice_renotify_allowed_for_same_item_with_large_drop(tmp_path):
+    notifier = CaptureNotifier()
+    repo = ItemRepository(str(tmp_path / "test.db"))
+    svc = MonitorService(_settings(tmp_path, max_notifications=2), DummyFetcher(), DummyExtractor(), repo, notifier)  # type: ignore[arg-type]
+    item = _load_fixture_items()[0]
+    dedupe_key = svc._dedupe_key(item)
+    sim_key = svc._similarity_key(item)
+    repo.mark_notified(
+        item.raw.source,
+        item.raw.item_url,
+        dedupe_key=dedupe_key,
+        similarity_key=sim_key,
+        notified_price=item.raw.listed_price,
+    )
+    item.raw.listed_price -= 1500
+    ok, reason = svc._should_notify(item)
+    assert ok is True
+    assert reason.startswith("値下げ再通知:")
+
+
+def test_reprice_renotify_blocked_when_drop_is_small(tmp_path):
+    notifier = CaptureNotifier()
+    repo = ItemRepository(str(tmp_path / "test.db"))
+    svc = MonitorService(_settings(tmp_path, max_notifications=2), DummyFetcher(), DummyExtractor(), repo, notifier)  # type: ignore[arg-type]
+    item = _load_fixture_items()[0]
+    dedupe_key = svc._dedupe_key(item)
+    sim_key = svc._similarity_key(item)
+    repo.mark_notified(
+        item.raw.source,
+        item.raw.item_url,
+        dedupe_key=dedupe_key,
+        similarity_key=sim_key,
+        notified_price=item.raw.listed_price,
+    )
+    item.raw.listed_price -= 500
+    ok, reason = svc._should_notify(item)
+    assert ok is False
+    assert reason.startswith("recent_duplicate(")

@@ -59,6 +59,7 @@ class ItemRepository:
                   item_url TEXT NOT NULL,
                   dedupe_key TEXT,
                   similarity_key TEXT,
+                  notified_price INTEGER,
                   notified_at TEXT NOT NULL
                 )
                 """
@@ -69,6 +70,10 @@ class ItemRepository:
                 pass
             try:
                 conn.execute("ALTER TABLE notification_history ADD COLUMN similarity_key TEXT")
+            except sqlite3.OperationalError:
+                pass
+            try:
+                conn.execute("ALTER TABLE notification_history ADD COLUMN notified_price INTEGER")
             except sqlite3.OperationalError:
                 pass
 
@@ -365,15 +370,56 @@ class ItemRepository:
         item_url: str,
         dedupe_key: str | None = None,
         similarity_key: str | None = None,
+        notified_price: int | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO notification_history (source, item_url, dedupe_key, similarity_key, notified_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO notification_history (source, item_url, dedupe_key, similarity_key, notified_price, notified_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (source, item_url, dedupe_key, similarity_key, datetime.now(timezone.utc).isoformat()),
+                (source, item_url, dedupe_key, similarity_key, notified_price, datetime.now(timezone.utc).isoformat()),
             )
+
+    def recent_notification_context(
+        self,
+        source: str,
+        item_url: str,
+        window_minutes: int,
+        dedupe_key: str | None = None,
+        similarity_key: str | None = None,
+    ) -> dict[str, int | bool | None]:
+        threshold = datetime.now(timezone.utc) - timedelta(minutes=window_minutes)
+        where = "(source = ? AND item_url = ?)"
+        params: list[str] = [source, item_url]
+        if dedupe_key:
+            where = f"{where} OR (dedupe_key = ?)"
+            params.append(dedupe_key)
+        if similarity_key:
+            where = f"{where} OR (similarity_key = ?)"
+            params.append(similarity_key)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT item_url, notified_price
+                FROM notification_history
+                WHERE ({where}) AND notified_at >= ?
+                ORDER BY notified_at DESC
+                """,
+                (*params, threshold.isoformat()),
+            ).fetchall()
+        same_item_recent = False
+        same_item_price: int | None = None
+        for row_item_url, row_notified_price in rows:
+            if row_item_url == item_url:
+                same_item_recent = True
+                same_item_price = row_notified_price
+                break
+        return {
+            "has_recent_duplicate": bool(rows),
+            "same_item_recent": same_item_recent,
+            "same_item_notified_price": same_item_price,
+        }
 
 
 def _build_timeseries(series_rows, mode: str):

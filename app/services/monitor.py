@@ -137,13 +137,17 @@ class MonitorService:
 
         dedupe_key = self._dedupe_key(item)
         similarity_key = self._similarity_key(item)
-        if self.repository.has_recent_notification(
+        duplicate_ctx = self.repository.recent_notification_context(
             source=item.raw.source,
             item_url=item.raw.item_url,
             window_minutes=self.settings.app.duplicate_window_minutes,
             dedupe_key=dedupe_key,
             similarity_key=similarity_key,
-        ):
+        )
+        if duplicate_ctx["has_recent_duplicate"]:
+            reprice_reason = self._reprice_renotify_reason(item, duplicate_ctx["same_item_notified_price"])
+            if duplicate_ctx["same_item_recent"] and reprice_reason:
+                return True, reprice_reason
             return False, f"recent_duplicate(dedupe_key={dedupe_key},similarity_key={similarity_key})"
         reason = (
             f"notified_reason(profit_current={item.estimated_profit},profit_threshold={self.settings.app.min_profit_yen}, "
@@ -175,6 +179,8 @@ class MonitorService:
             in_run_keys.add(dedupe_key)
             in_run_keys.add(similarity_key)
             reason = self._notify_reason(item)
+            if item.notification_reason and item.notification_reason.startswith("値下げ再通知:"):
+                reason = f"{item.notification_reason}。{reason}"
             item.notification_reason = reason
             self.notifier.send_item(item, reason)
             self.repository.mark_notified(
@@ -182,6 +188,7 @@ class MonitorService:
                 item.raw.item_url,
                 dedupe_key=dedupe_key,
                 similarity_key=similarity_key,
+                notified_price=item.raw.listed_price,
             )
             stats.notified += 1
             logger.debug("candidate notified: url=%s notified_reason=%s", item.raw.item_url, reason)
@@ -258,3 +265,17 @@ class MonitorService:
         if exclude_reason == "out_of_target":
             return "not_target_model"
         return f"excluded_by_rule(rule={exclude_reason})"
+
+    def _reprice_renotify_reason(self, item: ScoredItem, prev_notified_price: int | None) -> str | None:
+        if prev_notified_price is None or prev_notified_price <= 0:
+            return None
+        drop_yen = prev_notified_price - item.raw.listed_price
+        if drop_yen <= 0:
+            return None
+        drop_rate = drop_yen / prev_notified_price
+        if (
+            drop_yen < self.settings.notification.reprice_min_drop_yen
+            and drop_rate < self.settings.notification.reprice_min_drop_rate
+        ):
+            return None
+        return f"値下げ再通知: 前回通知時より {drop_yen:,}円値下げされたため再通知"
