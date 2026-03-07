@@ -12,6 +12,7 @@ $pythonExe = "C:\Users\koko3\AppData\Local\Microsoft\WindowsApps\PythonSoftwareF
 $logDir = Join-Path $projectRoot "logs"
 $logFile = Join-Path $logDir "monitor.log"
 $maxLogBytes = 5MB
+$pythonTimeoutSeconds = 900
 
 if (-not (Test-Path $logDir)) {
   New-Item -ItemType Directory -Path $logDir | Out-Null
@@ -65,34 +66,89 @@ Write-Log "[INFO] scheduled run started"
 Write-Log "[INFO] project_root=$projectRoot"
 Write-Log "[INFO] python_exe=$pythonExe"
 
+$exitCode = $null
+$pythonReturned = $false
+
 try {
   Set-Location $projectRoot
   if (-not (Test-Path $pythonExe)) {
     throw "python executable not found: $pythonExe"
   }
 
-  # NOTE:
-  # $LASTEXITCODE が空になるケースに備えて、$? でフォールバックして必ず数値化する。
-  $global:LASTEXITCODE = $null
-  $outputLines = & $pythonExe -m app.main --config config.yaml --env .env --verbose run-once 2>&1
+  $stdoutTmp = Join-Path $logDir ("python-stdout-{0}.log" -f ([guid]::NewGuid().ToString("N")))
+  $stderrTmp = Join-Path $logDir ("python-stderr-{0}.log" -f ([guid]::NewGuid().ToString("N")))
+  $proc = $null
+  Write-Log "[INFO] launching python"
+  try {
+    $proc = Start-Process `
+      -FilePath $pythonExe `
+      -ArgumentList @("-m", "app.main", "--config", "config.yaml", "--env", ".env", "--verbose", "run-once") `
+      -WorkingDirectory $projectRoot `
+      -NoNewWindow `
+      -PassThru `
+      -RedirectStandardOutput $stdoutTmp `
+      -RedirectStandardError $stderrTmp
 
-  foreach ($line in $outputLines) {
-    if ($null -ne $line) {
-      $clean = ("$line" -replace "`0", "")
-      Write-Log $clean
+    if ($proc.WaitForExit($pythonTimeoutSeconds * 1000)) {
+      $pythonReturned = $true
+      Write-Log "[INFO] python process returned"
+      $exitCode = [int]$proc.ExitCode
+    } else {
+      Write-Log "[ERROR] python timeout after ${pythonTimeoutSeconds}s pid=$($proc.Id)"
+      try {
+        Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+      } catch {
+        Write-Log "[ERROR] failed to kill timeout process pid=$($proc.Id): $($_.Exception.Message)"
+      }
+      $exitCode = 124
+    }
+
+    foreach ($tmp in @($stdoutTmp, $stderrTmp)) {
+      if (Test-Path $tmp) {
+        foreach ($line in Get-Content $tmp) {
+          if ($null -ne $line) {
+            $clean = ("$line" -replace "`0", "")
+            Write-Log $clean
+          }
+        }
+      }
+    }
+  } finally {
+    foreach ($tmp in @($stdoutTmp, $stderrTmp)) {
+      if (Test-Path $tmp) {
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+      }
     }
   }
-
-  if ($null -ne $LASTEXITCODE) {
-    $exitCode = [int]$LASTEXITCODE
-  } elseif ($?) {
-    $exitCode = 0
-  } else {
-    $exitCode = 1
+} catch {
+  $exitCode = 1
+  Write-Log "[ERROR] exception_message=$($_.Exception.Message)"
+  if ($_.Exception.GetType().FullName) {
+    Write-Log "[ERROR] exception_type=$($_.Exception.GetType().FullName)"
+  }
+  if ($_.ScriptStackTrace) {
+    Write-Log "[ERROR] script_stack=$($_.ScriptStackTrace)"
+  }
+  if ($_.InvocationInfo -and $_.InvocationInfo.PositionMessage) {
+    Write-Log "[ERROR] invocation=$($_.InvocationInfo.PositionMessage)"
+  }
+  $fullError = ($_ | Out-String).Trim()
+  if (-not [string]::IsNullOrWhiteSpace($fullError)) {
+    Write-Log "[ERROR] full_error=$fullError"
+  }
+} finally {
+  if (-not $pythonReturned) {
+    Write-Log "[WARN] python process did not return"
+  }
+  if ($null -eq $exitCode) {
+    if ($null -ne $LASTEXITCODE) {
+      $exitCode = [int]$LASTEXITCODE
+    } elseif ($?) {
+      $exitCode = 0
+    } else {
+      $exitCode = 1
+    }
   }
   Write-Log "[INFO] run exit_code=$exitCode"
-} catch {
-  Write-Log "[ERROR] $($_.Exception.Message)"
+  Write-Log "[INFO] scheduled run finished"
 }
-
-Write-Log "[INFO] scheduled run finished"
