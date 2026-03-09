@@ -138,6 +138,21 @@ def is_quote_stale(
     return checked_at < threshold
 
 
+def compute_quote_age_days(
+    quote_checked_at: str | None,
+    now: datetime | None = None,
+) -> int | None:
+    if not quote_checked_at:
+        return None
+    current = now or datetime.now(timezone.utc)
+    try:
+        checked_at = datetime.fromisoformat(str(quote_checked_at).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    delta = current - checked_at
+    return max(0, delta.days)
+
+
 def decide_exit_action(
     item_category: str | None,
     compatible_routes: list[str],

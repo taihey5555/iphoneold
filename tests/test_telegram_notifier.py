@@ -35,21 +35,31 @@ def _item() -> ScoredItem:
     )
 
 
-def test_detailed_message_contains_breakdown():
+def test_detailed_message_contains_breakdown_and_buyback_memo():
     notifier = TelegramNotifier(mode="detailed")
-    msg = notifier.build_message(_item(), "notified_reason(profit>=3000, risk<=4, network_restriction_unknown)")
+    msg = notifier.build_message(
+        _item(),
+        "notified_reason(profit>=3000, risk<=4, network_restriction_unknown)",
+        buyback_snapshot={"buyback_floor": 27000, "floor_gap": -32000, "stale_quote_found": False},
+    )
     assert "粗利根拠:" in msg
     assert "危険度スコア内訳:" in msg
     assert "通知理由:" in msg
     assert "ネットワーク制限不明" in msg
     assert "想定粗利>=" in msg
     assert "危険度スコア<=" in msg
+    assert "最悪出口: IOSYS下限 27,000円 / 現在価格差 -32,000円 / 最新" in msg
 
 
-def test_concise_message_is_short():
+def test_concise_message_is_short_and_shows_missing_buyback_floor():
     notifier = TelegramNotifier(mode="concise")
-    msg = notifier.build_message(_item(), "notified_reason(profit_current=6500,risk_threshold=4)")
+    msg = notifier.build_message(
+        _item(),
+        "notified_reason(profit_current=6500,risk_threshold=4)",
+        buyback_snapshot={"buyback_floor": None, "floor_gap": None, "stale_quote_found": False},
+    )
     assert "粗利根拠:" not in msg
     assert "危険度スコア内訳:" not in msg
     assert "通知理由:" in msg
     assert "危険度スコア" in msg
+    assert "最悪出口: buyback floor なし" in msg

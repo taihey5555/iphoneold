@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from app.models import NormalizedFields, RawListing, ScoredItem
+from app.parsers.iosys_buyback import normalize_model_name
+from app.utils.text import normalize_ws
 
 
 class ItemRepository:
@@ -254,11 +256,37 @@ class ItemRepository:
             )
         return cur.rowcount > 0
 
+    def append_review_note(self, source: str, item_url: str, note_suffix: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT review_note
+                FROM items
+                WHERE source = ? AND item_url = ?
+                """,
+                (source, item_url),
+            ).fetchone()
+            if not row:
+                return False
+            current = row[0]
+            next_note = f"{current}\n{note_suffix}" if current else note_suffix
+            cur = conn.execute(
+                """
+                UPDATE items
+                SET review_note = ?
+                WHERE source = ? AND item_url = ?
+                """,
+                (next_note, source, item_url),
+            )
+        return cur.rowcount > 0
+
     def list_recent_items(
         self,
         limit: int = 20,
         source: str | None = None,
         review_status: str | None = None,
+        missing_item_category: bool = False,
+        notified_only: bool = False,
     ) -> list[dict]:
         where: list[str] = []
         params: list = []
@@ -268,15 +296,28 @@ class ItemRepository:
         if review_status:
             where.append("review_status = ?")
             params.append(review_status)
+        if missing_item_category:
+            where.append("(item_category IS NULL OR item_category = '')")
+        if notified_only:
+            where.append(
+                """
+                EXISTS (
+                  SELECT 1
+                  FROM notification_history nh
+                  WHERE nh.source = items.source
+                    AND nh.item_url = items.item_url
+                )
+                """.strip()
+            )
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
         params.append(max(1, limit))
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT
-                  source, item_url, title, listed_price, estimated_profit,
+                  source, item_url, title, description, listed_price, estimated_profit,
                   risk_score, review_status, review_note, exit_channel, outcome_status,
-                  actual_sale_price, actual_profit, outcome_note, fetched_at, exclude_reason
+                  actual_sale_price, actual_profit, outcome_note, fetched_at, exclude_reason, item_category
                 FROM items
                 {where_sql}
                 ORDER BY fetched_at DESC
@@ -291,21 +332,68 @@ class ItemRepository:
                     "source": row[0],
                     "item_url": row[1],
                     "title": row[2],
-                    "listed_price": row[3],
-                    "estimated_profit": row[4],
-                    "risk_score": row[5],
-                    "review_status": row[6],
-                    "review_note": row[7],
-                    "exit_channel": row[8],
-                    "outcome_status": row[9],
-                    "actual_sale_price": row[10],
-                    "actual_profit": row[11],
-                    "outcome_note": row[12],
-                    "fetched_at": row[13],
-                    "exclude_reason": row[14],
+                    "listed_price": row[4],
+                    "estimated_profit": row[5],
+                    "risk_score": row[6],
+                    "review_status": row[7],
+                    "review_note": row[8],
+                    "exit_channel": row[9],
+                    "outcome_status": row[10],
+                    "actual_sale_price": row[11],
+                    "actual_profit": row[12],
+                    "outcome_note": row[13],
+                    "fetched_at": row[14],
+                    "exclude_reason": row[15],
+                    "item_category": row[16],
+                    "item_category_hint": detect_item_category_hint(row[2], row[3]),
                 }
             )
         return out
+
+    def summarize_item_category_state(self) -> dict:
+        with self._connect() as conn:
+            columns = [row[1] for row in conn.execute("PRAGMA table_info(items)").fetchall()]
+            has_item_category = "item_category" in columns
+            total = int(conn.execute("SELECT COUNT(*) FROM items").fetchone()[0])
+            if not has_item_category:
+                return {
+                    "item_category_column_exists": False,
+                    "items_total": total,
+                    "item_category_missing_count": total,
+                    "item_category_filled_count": 0,
+                    "item_category_distribution": {"used": 0, "opened_unused": 0, "null": total},
+                    "opened_unused_hint_count": 0,
+                }
+            distribution_rows = conn.execute(
+                """
+                SELECT COALESCE(NULLIF(item_category, ''), 'null') AS category, COUNT(*)
+                FROM items
+                GROUP BY category
+                """
+            ).fetchall()
+            distribution = {"used": 0, "opened_unused": 0, "null": 0}
+            for category, count in distribution_rows:
+                if category in distribution:
+                    distribution[category] = int(count)
+            missing_count = distribution["null"]
+            hint_rows = conn.execute(
+                """
+                SELECT title, description
+                FROM items
+                WHERE item_category IS NULL OR item_category = ''
+                """
+            ).fetchall()
+        opened_unused_hint_count = sum(
+            1 for title, description in hint_rows if detect_item_category_hint(title, description) == "opened_unused"
+        )
+        return {
+            "item_category_column_exists": True,
+            "items_total": total,
+            "item_category_missing_count": missing_count,
+            "item_category_filled_count": total - missing_count,
+            "item_category_distribution": distribution,
+            "opened_unused_hint_count": opened_unused_hint_count,
+        }
 
     def add_buyback_shop(
         self,
@@ -553,13 +641,120 @@ class ItemRepository:
             )
         return out
 
+    def get_latest_buyback_quote_for_item_shop(self, source: str, item_url: str, shop_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  q.id,
+                  q.item_category,
+                  q.quoted_price_min,
+                  q.quoted_price_max,
+                  q.condition_assumption,
+                  q.quote_checked_at,
+                  q.source_url,
+                  q.notes
+                FROM buyback_quotes q
+                WHERE q.source = ? AND q.item_url = ? AND q.shop_id = ?
+                ORDER BY q.quote_checked_at DESC, q.id DESC
+                LIMIT 1
+                """,
+                (source, item_url, shop_id),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "item_category": row[1],
+            "quoted_price_min": row[2],
+            "quoted_price_max": row[3],
+            "condition_assumption": row[4],
+            "quote_checked_at": row[5],
+            "source_url": row[6],
+            "notes": row[7],
+        }
+
+    def find_iosys_buyback_candidates(self, carrier_type: str, storage_gb: int) -> list[dict]:
+        where = [
+            "CAST(json_extract(normalized_json, '$.storage_gb') AS INTEGER) = ?",
+        ]
+        params: list[object] = [int(storage_gb)]
+        if carrier_type == "sim_free":
+            where.append("CAST(json_extract(normalized_json, '$.sim_free_flag') AS INTEGER) = 1")
+        else:
+            where.append("LOWER(COALESCE(json_extract(normalized_json, '$.carrier'), '')) = ?")
+            params.append(str(carrier_type).lower())
+        where_sql = " AND ".join(where)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT source, item_url, normalized_json, item_category
+                FROM items
+                WHERE {where_sql}
+                """,
+                params,
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            normalized = json.loads(row[2] or "{}")
+            out.append(
+                {
+                    "source": row[0],
+                    "item_url": row[1],
+                    "normalized": normalized,
+                    "item_category": row[3],
+                }
+            )
+        return out
+
+    def find_iosys_buyback_candidates_for_storage(self, storage_gb: int) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT source, item_url, normalized_json, item_category
+                FROM items
+                WHERE CAST(json_extract(normalized_json, '$.storage_gb') AS INTEGER) = ?
+                """,
+                (int(storage_gb),),
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "source": row[0],
+                    "item_url": row[1],
+                    "normalized": json.loads(row[2] or "{}"),
+                    "item_category": row[3],
+                }
+            )
+        return out
+
+    def find_items_for_iosys_buyback(
+        self,
+        model_name_key: str,
+        carrier_type: str,
+        storage_gb: int,
+        item_category: str,
+    ) -> list[dict]:
+        candidates = self.find_iosys_buyback_candidates(carrier_type=carrier_type, storage_gb=storage_gb)
+        out: list[dict] = []
+        for row in candidates:
+            current_model_key = normalize_model_name(row["normalized"].get("model_name") or "")
+            if current_model_key != model_name_key:
+                continue
+            if row.get("item_category") != item_category:
+                continue
+            out.append(row)
+        return out
+
     def get_item_buyback_context(self, source: str, item_url: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
                 """
                 SELECT
                   source, item_url, title, listed_price, shipping_fee, estimated_profit,
-                  selling_fee, risk_score, risk_flags_json, item_category, review_status, outcome_status
+                  selling_fee, risk_score, risk_flags_json, item_category, review_status, outcome_status,
+                  review_note, exit_channel, actual_sale_price, actual_profit
                 FROM items
                 WHERE source = ? AND item_url = ?
                 """,
@@ -580,6 +775,10 @@ class ItemRepository:
             "item_category": row[9],
             "review_status": row[10],
             "outcome_status": row[11],
+            "review_note": row[12],
+            "exit_channel": row[13],
+            "actual_sale_price": row[14],
+            "actual_profit": row[15],
         }
 
     def update_outcome(
@@ -1134,6 +1333,13 @@ def _norm_to_dict(norm: NormalizedFields) -> dict:
         "risk_score": norm.risk_score,
         "risk_score_breakdown": norm.risk_score_breakdown,
     }
+
+
+def detect_item_category_hint(title: str | None, description: str | None) -> str | None:
+    text = normalize_ws(f"{title or ''} {description or ''}").lower()
+    if any(word in text for word in ("開封済み未使用", "未使用", "動作確認のみ")):
+        return "opened_unused"
+    return None
 
 
 def _compute_actual_profit(

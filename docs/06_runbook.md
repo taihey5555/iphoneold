@@ -16,6 +16,39 @@
 - Telegram token/chat_id 設定
 - DB書き込み権限
 
+## item_category 運用
+1. `python -m app.main review-status item-category-check`
+   - `item_category_missing_count`
+   - `item_category_filled_count`
+   - `item_category_distribution`
+   - `opened_unused_hint_count`
+   を確認する
+2. `python -m app.main review-status list --missing-item-category --format json`
+   - まず `item_category_hint=opened_unused` のものを優先して確認する
+3. 確定できたものだけ `review-status set --item-category ...` で埋める
+   - 例: `python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status watched --item-category opened_unused`
+   - 例: `python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m124" --status watched --item-category used`
+4. `item_category` を埋めた後に `buyback-quote fetch-iosys` を回す
+5. 必要な item に対して `review-status evaluate-exit` を回す
+6. 自動更新はしない
+   - hint は表示だけ
+   - `item_category` の確定は `review-status set --item-category ...` で行う
+
+### item_category レビューUI
+- ローカルUIを起動:
+  - `python -m app.main review-status ui`
+- ブラウザで開く:
+  - `http://127.0.0.1:8765/`
+- 画面でできること:
+  - `missing item_category only`
+  - `good / watched only`
+  - `hint=opened_unused first`
+  - `limit`
+  - `used / opened_unused / good / watched / bad` の更新
+  - 商品URLを別タブで開く
+- `skip` は更新せず一覧を見続けるだけ
+- 毎日の運用は、まず UI で `item_category` を埋め、その後に `buyback-quote fetch-iosys` と `review-status evaluate-exit` を回す
+
 ## 1週間後レビュー手順
 1. Telegram 通知を回収する
    - URL と通知文をセットで残す

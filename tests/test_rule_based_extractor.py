@@ -96,3 +96,44 @@ def test_negative_phrases_do_not_trigger_screen_or_repair_flags():
     assert norm.screen_issue_flag is False
     assert norm.repair_history_flag is False
     assert "repair_history" not in norm.risk_flags
+
+
+def test_carrier_and_sim_free_variants_are_normalized():
+    item = _raw(
+        "iPhone 14 128GB Y!mobile SiMフリー",
+        "docomo版も比較済み UQ mobile ではない",
+    )
+    norm = RuleBasedExtractor().extract(item)
+    assert norm.storage_gb == 128
+    assert norm.sim_free_flag is True
+    assert norm.carrier == "docomo"
+
+
+def test_storage_invalid_values_are_rejected():
+    item = _raw(
+        "iPhone13 265GB SiMフリー",
+        "Apple iPhone 14128GB ミッドナイト 本体",
+    )
+    norm = RuleBasedExtractor().extract(item)
+    assert norm.storage_gb is None
+    assert norm.sim_free_flag is True
+
+
+def test_storage_slash_format_is_still_extracted():
+    item = _raw(
+        "iPhone13/256GB/RED by メルカリ",
+        "",
+    )
+    norm = RuleBasedExtractor().extract(item)
+    assert norm.model_name == "iPhone 13"
+    assert norm.storage_gb == 256
+
+
+def test_model_extraction_supports_12_and_16_series():
+    item_12 = _raw("iPhone12 mini 128GB", "")
+    norm_12 = RuleBasedExtractor().extract(item_12)
+    assert norm_12.model_name == "iPhone 12 mini"
+
+    item_16 = _raw("iphone16 pro 256GB", "")
+    norm_16 = RuleBasedExtractor().extract(item_16)
+    assert norm_16.model_name == "iPhone 16 Pro"

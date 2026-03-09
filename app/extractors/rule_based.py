@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from app.extractors.base import Extractor
 from app.models import NormalizedFields, RawListing
@@ -19,6 +20,8 @@ RISK_SCORE_WEIGHTS = {
     "activation_lock_risk": 5,
     "description_inconsistency": 2,
 }
+
+_VALID_STORAGE_GB = {64, 128, 256, 512, 1024}
 
 
 class RuleBasedExtractor(Extractor):
@@ -51,6 +54,10 @@ class RuleBasedExtractor(Extractor):
 def _extract_model(text: str) -> str | None:
     lower = text.lower()
     patterns = (
+        (r"iphone\s*16\s*pro\s*max", "iPhone 16 Pro Max"),
+        (r"iphone\s*16\s*pro", "iPhone 16 Pro"),
+        (r"iphone\s*16\s*plus", "iPhone 16 Plus"),
+        (r"iphone\s*16(?!\s*(?:pro|max|plus))", "iPhone 16"),
         (r"iphone\s*15\s*pro\s*max", "iPhone 15 Pro Max"),
         (r"iphone\s*15\s*pro", "iPhone 15 Pro"),
         (r"iphone\s*15\s*plus", "iPhone 15 Plus"),
@@ -63,6 +70,10 @@ def _extract_model(text: str) -> str | None:
         (r"iphone\s*13\s*pro", "iPhone 13 Pro"),
         (r"iphone\s*13\s*mini", "iPhone 13 mini"),
         (r"iphone\s*13(?!\s*(?:pro|max|mini))", "iPhone 13"),
+        (r"iphone\s*12\s*pro\s*max", "iPhone 12 Pro Max"),
+        (r"iphone\s*12\s*pro", "iPhone 12 Pro"),
+        (r"iphone\s*12\s*mini", "iPhone 12 mini"),
+        (r"iphone\s*12(?!\s*(?:pro|max|mini))", "iPhone 12"),
     )
     for pattern, model in patterns:
         if re.search(pattern, lower):
@@ -71,8 +82,15 @@ def _extract_model(text: str) -> str | None:
 
 
 def _extract_storage(text: str) -> int | None:
-    m = re.search(r"(\d{2,4})\s*gb", text, flags=re.IGNORECASE)
-    return int(m.group(1)) if m else None
+    normalized = unicodedata.normalize("NFKC", text)
+    m = re.search(r"(\d{1,4})\s*(gb|tb)", normalized, flags=re.IGNORECASE)
+    if not m:
+        return None
+    value = int(m.group(1))
+    unit = m.group(2).lower()
+    if unit == "tb":
+        value *= 1024
+    return value if value in _VALID_STORAGE_GB else None
 
 
 def _extract_color(text: str) -> str | None:
@@ -84,21 +102,26 @@ def _extract_color(text: str) -> str | None:
 
 
 def _extract_carrier(text: str) -> str | None:
-    if contains_any(text, ["docomo", "ドコモ"]):
+    normalized = unicodedata.normalize("NFKC", text)
+    lower = normalized.lower()
+    if contains_any(lower, ["docomo", "ドコモ", "docomo版"]):
         return "docomo"
-    if contains_any(text, ["au"]):
+    if contains_any(lower, ["uq", "uq mobile"]):
         return "au"
-    if contains_any(text, ["softbank", "ソフトバンク"]):
+    if re.search(r"(?<![a-z0-9])au(?![a-z0-9])", lower) or "au版" in lower:
+        return "au"
+    if contains_any(lower, ["softbank", "ソフトバンク", "softbank版", "ワイモバイル", "y!mobile", "ymobile"]):
         return "softbank"
-    if contains_any(text, ["楽天", "rakuten"]):
+    if contains_any(lower, ["楽天", "rakuten", "rakuten mobile"]):
         return "rakuten"
     return None
 
 
 def _extract_sim_free(text: str) -> bool | None:
-    if contains_any(text, ["simフリー", "sim free", "simfree"]):
+    normalized = unicodedata.normalize("NFKC", text).lower()
+    if contains_any(normalized, ["simフリー", "sim free", "simfree", "sim-free"]):
         return True
-    if contains_any(text, ["simロック", "sim lock"]):
+    if contains_any(normalized, ["simロック", "sim lock", "sim-lock"]):
         return False
     return None
 

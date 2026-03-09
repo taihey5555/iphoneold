@@ -269,6 +269,260 @@ def test_cli_review_status_list_formats_and_summary(tmp_path, capsys):
     assert payload["status_average_estimated_profit"]["good"] is not None
 
 
+def test_cli_review_status_list_missing_item_category_and_exit_eval(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    url_missing = "https://jp.mercari.com/item/missing1"
+    url_used = "https://jp.mercari.com/item/used1"
+    _insert_item(db_path, "mercari_public", url_missing)
+    _insert_item(db_path, "mercari_public", url_used)
+
+    repo = ItemRepository(str(db_path))
+    assert repo.update_item_category("mercari_public", url_used, "used")
+    shop_id = repo.add_buyback_shop("UsedA", accepts_used=True)
+    repo.insert_buyback_quote("mercari_public", url_used, shop_id, "used", 63000, 65000, "B")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--missing-item-category",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    missing_rows = json.loads(capsys.readouterr().out)
+    assert len(missing_rows) == 1
+    assert missing_rows[0]["item_url"] == url_missing
+    assert missing_rows[0]["item_category_hint"] is None
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--with-exit-eval",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    rows = json.loads(capsys.readouterr().out)
+    used_row = next(row for row in rows if row["item_url"] == url_used)
+    assert used_row["item_category"] == "used"
+    assert used_row["conservative_exit_price"] == 63000
+    assert used_row["max_purchase_price"] == 55250
+    assert used_row["decision"] == "should_buy"
+    assert used_row["stale_quote_found"] is False
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--with-buyback-floor",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    floor_rows = json.loads(capsys.readouterr().out)
+    used_floor_row = next(row for row in floor_rows if row["item_url"] == url_used)
+    assert used_floor_row["buyback_floor"] == 63000
+    assert used_floor_row["floor_gap"] == 13000
+    assert used_floor_row["buyback_decision"] == "should_buy"
+    assert used_floor_row["buyback_stale_quote_found"] is False
+
+
+def test_cli_review_status_list_notified_only(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    url_notified = "https://jp.mercari.com/item/notified1"
+    url_plain = "https://jp.mercari.com/item/plain1"
+    _insert_item(db_path, "mercari_public", url_notified)
+    _insert_item(db_path, "mercari_public", url_plain)
+    repo = ItemRepository(str(db_path))
+    repo.mark_notified("mercari_public", url_notified)
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--notified-only",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1
+    assert rows[0]["item_url"] == url_notified
+
+
+def test_cli_review_status_item_category_check_and_hint(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    repo = ItemRepository(str(db_path))
+    raw_missing = RawListing(
+        source="mercari_public",
+        item_url="https://jp.mercari.com/item/h1",
+        title="iPhone 14 128GB",
+        description="開封済み未使用 動作確認のみ",
+        listed_price=50000,
+        shipping_fee=0,
+        posted_at=None,
+        seller_name="seller",
+        image_urls=[],
+        fetched_at=datetime.now(timezone.utc),
+    )
+    raw_used = RawListing(
+        source="mercari_public",
+        item_url="https://jp.mercari.com/item/h2",
+        title="iPhone 14 128GB",
+        description="通常中古",
+        listed_price=50000,
+        shipping_fee=0,
+        posted_at=None,
+        seller_name="seller",
+        image_urls=[],
+        fetched_at=datetime.now(timezone.utc),
+    )
+    item_missing = CandidateItem(raw=raw_missing, normalized=NormalizedFields(model_name="iPhone 14", storage_gb=128), exclude_reason=None)
+    item_used = CandidateItem(raw=raw_used, normalized=NormalizedFields(model_name="iPhone 14", storage_gb=128), exclude_reason=None)
+    repo.upsert_scored_item(ProfitEstimator([]).score(item_missing))
+    repo.upsert_scored_item(ProfitEstimator([]).score(item_used))
+    assert repo.update_item_category("mercari_public", "https://jp.mercari.com/item/h2", "used")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "item-category-check",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["item_category_column_exists"] is True
+    assert payload["items_total"] == 2
+    assert payload["item_category_missing_count"] == 1
+    assert payload["item_category_filled_count"] == 1
+    assert payload["item_category_distribution"]["used"] == 1
+    assert payload["item_category_distribution"]["opened_unused"] == 0
+    assert payload["item_category_distribution"]["null"] == 1
+    assert payload["opened_unused_hint_count"] == 1
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--missing-item-category",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 1
+    assert rows[0]["item_category_hint"] == "opened_unused"
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--missing-item-category",
+                "--format",
+                "human",
+            ]
+        )
+        == 0
+    )
+    human = capsys.readouterr().out
+    assert "hint=opened_unused" in human
+    assert "url=https://jp.mercari.com/item/h1" in human
+
+
+def test_item_repository_migrates_item_category_column_for_legacy_db(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        """
+        CREATE TABLE items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          source TEXT NOT NULL,
+          item_url TEXT NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT NOT NULL,
+          listed_price INTEGER NOT NULL,
+          shipping_fee INTEGER NOT NULL,
+          posted_at TEXT,
+          seller_name TEXT,
+          image_urls_json TEXT NOT NULL,
+          fetched_at TEXT NOT NULL,
+          normalized_json TEXT NOT NULL,
+          expected_resale_price INTEGER NOT NULL,
+          estimated_profit INTEGER NOT NULL,
+          selling_fee INTEGER NOT NULL,
+          shipping_cost INTEGER NOT NULL,
+          risk_buffer INTEGER NOT NULL,
+          risk_score INTEGER NOT NULL,
+          risk_flags_json TEXT NOT NULL,
+          exclude_reason TEXT,
+          UNIQUE(source, item_url)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    repo = ItemRepository(str(db_path))
+    state = repo.summarize_item_category_state()
+    assert state["item_category_column_exists"] is True
+
+
 def test_cli_review_status_set_note_persists_in_json(tmp_path, capsys):
     config_path = tmp_path / "config.yaml"
     db_path = tmp_path / "test.db"

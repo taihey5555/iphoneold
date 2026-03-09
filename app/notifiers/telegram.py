@@ -9,16 +9,16 @@ from app.models import ScoredItem
 
 RISK_FLAG_JA = {
     "network_restriction_unknown": "ネットワーク制限不明",
-    "battery_service": "バッテリー要整備",
+    "battery_service": "バッテリー劣化",
     "repair_history": "修理歴あり",
     "non_genuine_display": "非純正ディスプレイ",
     "camera_issue": "カメラ不具合",
-    "frame_damage": "筐体ダメージ",
+    "frame_damage": "フレーム損傷",
     "charging_issue": "充電不具合",
     "sim_issue": "SIM関連不具合",
     "face_id_not_working": "Face ID不良",
     "activation_lock_risk": "アクティベーションロック疑い",
-    "description_inconsistency": "説明不整合",
+    "description_inconsistency": "説明文不整合",
 }
 
 REASON_TOKEN_JA = {
@@ -26,10 +26,10 @@ REASON_TOKEN_JA = {
     "carrier_unknown": "キャリア不明",
     "carrier(": "キャリア(",
     "network_restriction_unknown": "ネットワーク制限不明",
-    "battery_service": "バッテリー要整備",
+    "battery_service": "バッテリー劣化",
     "repair_history": "修理歴あり",
     "non_genuine_display": "非純正ディスプレイ",
-    "frame_damage": "筐体ダメージ",
+    "frame_damage": "フレーム損傷",
     "notified_reason": "通知理由",
     "risk_score": "危険度スコア",
     "priority_score": "優先度スコア",
@@ -55,34 +55,36 @@ class TelegramNotifier:
     def enabled(self) -> bool:
         return bool(self.bot_token and self.chat_id)
 
-    def send_item(self, item: ScoredItem, reason_summary: str) -> None:
+    def send_item(self, item: ScoredItem, reason_summary: str, buyback_snapshot: dict | None = None) -> None:
         if not self.enabled:
             return
         url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        text = self.build_message(item, reason_summary)
+        text = self.build_message(item, reason_summary, buyback_snapshot=buyback_snapshot)
         requests.post(
             url,
             json={"chat_id": self.chat_id, "text": text, "disable_web_page_preview": True},
             timeout=10,
         ).raise_for_status()
 
-    def build_message(self, item: ScoredItem, reason_summary: str) -> str:
+    def build_message(self, item: ScoredItem, reason_summary: str, buyback_snapshot: dict | None = None) -> str:
         reason_ja = _to_ja_reason(reason_summary)
+        memo = _build_buyback_memo(buyback_snapshot)
         if self.mode == "concise":
-            return (
+            message = (
                 f"[中古スマホ通知]\n"
                 f"{item.raw.title}\n"
                 f"価格: {item.raw.listed_price}円 / 想定粗利: {item.estimated_profit}円 / 危険度スコア: {item.normalized.risk_score}\n"
                 f"通知理由: {reason_ja}\n"
                 f"{item.raw.item_url}"
             )
+            return f"{message}\n{memo}" if memo else message
 
         risk_flags = ", ".join(_risk_flag_ja(x) for x in item.normalized.risk_flags) if item.normalized.risk_flags else "-"
         risk_breakdown = ", ".join(
             f"{_risk_flag_ja(k)}:{v}" for k, v in item.normalized.risk_score_breakdown.items()
         ) or "-"
         resale_basis = ", ".join(_resale_reason_ja(x) for x in item.resale_price_reasons) if item.resale_price_reasons else "-"
-        return (
+        message = (
             f"[中古スマホ通知]\n"
             f"商品名: {item.raw.title}\n"
             f"価格: {item.raw.listed_price}円 (+送料{item.raw.shipping_fee}円)\n"
@@ -95,6 +97,7 @@ class TelegramNotifier:
             f"URL: {item.raw.item_url}\n"
             f"通知理由: {reason_ja}"
         )
+        return f"{message}\n\n{memo}" if memo else message
 
 
 def _risk_flag_ja(flag: str) -> str:
@@ -119,10 +122,26 @@ def _resale_reason_ja(reason: str) -> str:
 
 def _to_ja_reason(reason: str) -> str:
     out = reason or ""
-    for k, v in REASON_TOKEN_JA.items():
-        out = out.replace(k, v)
+    for key, value in REASON_TOKEN_JA.items():
+        out = out.replace(key, value)
     out = out.replace("risk=", "危険度スコア=")
     out = out.replace("profit>=", "想定粗利>=")
     out = out.replace("risk<=", "危険度スコア<=")
     out = re.sub(r"\brisk\b", "危険度", out)
     return out
+
+
+def _build_buyback_memo(snapshot: dict | None) -> str | None:
+    if not snapshot:
+        return None
+    floor = snapshot.get("buyback_floor")
+    if floor is None:
+        return "最悪出口: buyback floor なし"
+    gap = snapshot.get("floor_gap")
+    freshness = "古い" if snapshot.get("stale_quote_found") else "最新"
+    if gap is None:
+        gap_text = "-"
+    else:
+        gap_int = int(gap)
+        gap_text = f"+{gap_int:,}円" if gap_int > 0 else f"{gap_int:,}円"
+    return f"最悪出口: IOSYS下限 {int(floor):,}円 / 現在価格差 {gap_text} / {freshness}"

@@ -15,7 +15,9 @@ from app.extractors.rule_based import RuleBasedExtractor
 from app.models import BUYBACK_ITEM_CATEGORIES
 from app.notifiers import TelegramNotifier
 from app.repositories import ItemRepository, ScraplingFetcher
-from app.services import BuybackEvaluationService, MonitorService
+from app.services import BuybackEvaluationService, IosysBuybackService, MonitorService
+from app.services.buyback import compute_quote_age_days, is_quote_stale
+from app.ui import run_review_ui
 
 REVIEW_STATUSES = ("pending", "watched", "good", "bad", "bought")
 EXIT_CHANNELS = ("mercari_resale", "buyback_shop")
@@ -61,7 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--limit", type=int, default=20, help="number of rows")
     list_cmd.add_argument("--source", default=None, help="filter by source")
     list_cmd.add_argument("--status", default=None, choices=REVIEW_STATUSES, help="filter by review status")
-    list_cmd.add_argument("--format", default="tsv", choices=("tsv", "csv", "json"), help="output format")
+    list_cmd.add_argument("--missing-item-category", action="store_true", help="show only items missing item_category")
+    list_cmd.add_argument("--notified-only", action="store_true", help="show only notified items")
+    list_cmd.add_argument("--with-exit-eval", action="store_true", help="include exit evaluation helper columns")
+    list_cmd.add_argument("--with-buyback-floor", action="store_true", help="include conservative buyback floor helper columns")
+    list_cmd.add_argument("--format", default="tsv", choices=("human", "tsv", "csv", "json"), help="output format")
     list_cmd.add_argument("--output", default=None, help="write output to file")
 
     summary_cmd = review_sub.add_parser("summary", help="Summary metrics by review_status")
@@ -87,7 +93,23 @@ def build_parser() -> argparse.ArgumentParser:
     eval_cmd.add_argument("--source", required=True, help="item source")
     eval_cmd.add_argument("--item-url", required=True, help="item url")
     eval_cmd.add_argument("--item-category", default=None, choices=BUYBACK_ITEM_CATEGORIES, help="override item category")
-    eval_cmd.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+    eval_cmd.add_argument("--save-note", action="store_true", help="append short exit evaluation summary to review note")
+    eval_cmd.add_argument("--format", default="human", choices=("human", "json", "tsv"), help="output format")
+
+    item_category_check_cmd = review_sub.add_parser("item-category-check", help="Show item_category schema and fill status")
+    item_category_check_cmd.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+
+    review_ui_cmd = review_sub.add_parser("ui", help="Run local review UI for item_category updates")
+    review_ui_cmd.add_argument("--host", default="127.0.0.1", help="bind host")
+    review_ui_cmd.add_argument("--port", type=int, default=8765, help="bind port")
+
+    buyback = sub.add_parser("buyback", help="Buyback support operations")
+    buyback_sub = buyback.add_subparsers(dest="buyback_command", required=True)
+
+    buyback_config = buyback_sub.add_parser("config", help="Show buyback configuration")
+    buyback_config_sub = buyback_config.add_subparsers(dest="buyback_config_command", required=True)
+    buyback_config_show = buyback_config_sub.add_parser("show", help="Show current buyback settings")
+    buyback_config_show.add_argument("--format", default="human", choices=("human", "json", "tsv"), help="output format")
 
     buyback_shop = sub.add_parser("buyback-shop", help="Buyback shop master operations")
     shop_sub = buyback_shop.add_subparsers(dest="buyback_shop_command", required=True)
@@ -142,6 +164,14 @@ def build_parser() -> argparse.ArgumentParser:
     quote_list.add_argument("--source", required=True, help="item source")
     quote_list.add_argument("--item-url", required=True, help="item url")
     quote_list.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+
+    quote_import = quote_sub.add_parser("import", help="Import buyback quotes from CSV or TSV")
+    quote_import.add_argument("--input", required=True, help="input file path")
+    quote_import.add_argument("--format", default="tsv", choices=("tsv", "csv"), help="input format")
+
+    quote_fetch_iosys = quote_sub.add_parser("fetch-iosys", help="Fetch IOSYS iPhone buyback quotes")
+    quote_fetch_iosys.add_argument("--source-url", required=True, help="IOSYS iPhone buyback table URL")
+    quote_fetch_iosys.add_argument("--format", default="human", choices=("human", "json"), help="output format")
     return parser
 
 
@@ -181,9 +211,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "review-status" and args.review_command == "list":
-        rows = repo.list_recent_items(limit=args.limit, source=args.source, review_status=args.status)
-        content = _render_recent_items(rows, args.format)
+        rows = repo.list_recent_items(
+            limit=args.limit,
+            source=args.source,
+            review_status=args.status,
+            missing_item_category=args.missing_item_category,
+            notified_only=args.notified_only,
+        )
+        if args.with_exit_eval or args.with_buyback_floor:
+            service = BuybackEvaluationService(settings=settings, repository=repo)
+            rows = _attach_exit_evaluation(rows, service)
+        content = _render_recent_items(
+            rows,
+            args.format,
+            with_exit_eval=args.with_exit_eval,
+            with_buyback_floor=args.with_buyback_floor,
+        )
         _emit_output(content, args.output)
+        return 0
+
+    if args.command == "review-status" and args.review_command == "item-category-check":
+        content = _render_item_category_check(repo.summarize_item_category_state(), args.format)
+        _emit_output(content, None)
+        return 0
+
+    if args.command == "review-status" and args.review_command == "ui":
+        run_review_ui(repository=repo, host=args.host, port=args.port)
         return 0
 
     if args.command == "review-status" and args.review_command == "outcome-set":
@@ -228,7 +281,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "review-status" and args.review_command == "evaluate-exit":
         service = BuybackEvaluationService(settings=settings, repository=repo)
         result = service.evaluate_exit(args.source, args.item_url, item_category_override=args.item_category)
-        content = _render_exit_evaluation(result, args.format)
+        comparison = _build_exit_actual_comparison(repo, result.source, result.item_url, result.conservative_exit_price, result.max_purchase_price)
+        if args.save_note:
+            ok = repo.append_review_note(args.source, args.item_url, _build_exit_eval_note_summary(result, comparison))
+            if not ok:
+                logging.getLogger(__name__).error("item not found: source=%s item_url=%s", args.source, args.item_url)
+                return 1
+        content = _render_exit_evaluation(result, args.format, comparison=comparison)
+        _emit_output(content, None)
+        return 0
+
+    if args.command == "buyback" and args.buyback_command == "config" and args.buyback_config_command == "show":
+        content = _render_buyback_config(settings, args.format)
         _emit_output(content, None)
         return 0
 
@@ -283,14 +347,42 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "buyback-quote" and args.buyback_quote_command == "list":
         rows = repo.list_buyback_quotes(args.source, args.item_url)
+        rows = _attach_quote_staleness(rows, stale_quote_days=settings.buyback.stale_quote_days)
         content = _render_buyback_quotes(rows, args.format)
         _emit_output(content, None)
+        return 0
+
+    if args.command == "buyback-quote" and args.buyback_quote_command == "import":
+        inserted = _import_buyback_quotes(
+            repo=repo,
+            input_path=args.input,
+            input_format=args.format,
+        )
+        print(f"imported: {inserted}")
+        return 0
+
+    if args.command == "buyback-quote" and args.buyback_quote_command == "fetch-iosys":
+        service = IosysBuybackService(
+            fetcher=ScraplingFetcher(timeout_seconds=settings.app.fetch_timeout_seconds),
+            repository=repo,
+        )
+        try:
+            summary = service.fetch_and_store(source_url=args.source_url)
+        except Exception as exc:
+            logging.getLogger(__name__).exception("iosys fetch failed: url=%s err=%s", args.source_url, exc)
+            return 1
+        print(_render_iosys_fetch_summary(summary, args.format))
         return 0
 
     return 0
 
 
-def _render_recent_items(rows: list[dict], output_format: str) -> str:
+def _render_recent_items(
+    rows: list[dict],
+    output_format: str,
+    with_exit_eval: bool = False,
+    with_buyback_floor: bool = False,
+) -> str:
     if not rows:
         if output_format == "json":
             return "[]"
@@ -308,11 +400,61 @@ def _render_recent_items(rows: list[dict], output_format: str) -> str:
         "estimated_profit",
         "risk_score",
         "fetched_at",
+        "item_category_hint",
         "title",
         "item_url",
     ]
+    if with_buyback_floor:
+        fields.extend(
+            [
+                "buyback_floor",
+                "floor_gap",
+                "buyback_decision",
+                "buyback_stale_quote_found",
+            ]
+        )
+    if with_exit_eval:
+        fields.extend(
+            [
+                "item_category",
+                "conservative_exit_price",
+                "max_purchase_price",
+                "decision",
+                "stale_quote_found",
+            ]
+        )
     if output_format == "json":
         return json.dumps(rows, ensure_ascii=False)
+    if output_format == "human":
+        lines = []
+        for idx, r in enumerate(rows, start=1):
+            lines.append(
+                f"[{idx}] {r['title']} | status={r['review_status']} | hint={r.get('item_category_hint') or '-'} | category={r.get('item_category') or '-'}"
+            )
+            lines.append(
+                f"    price={r['listed_price']} profit={r['estimated_profit']} risk={r['risk_score']} fetched_at={r['fetched_at']}"
+            )
+            if with_buyback_floor:
+                lines.append(
+                    "    "
+                    f"buyback_floor={r.get('buyback_floor') if r.get('buyback_floor') is not None else '-'} "
+                    f"floor_gap={_format_signed(r.get('floor_gap'))} "
+                    f"decision={r.get('buyback_decision') or '-'} "
+                    f"stale_quote_found={_bool_text(r.get('buyback_stale_quote_found'))}"
+                )
+            lines.append(f"    url={r['item_url']}")
+            if r.get("review_note"):
+                lines.append(f"    note={r['review_note']}")
+            if with_exit_eval:
+                lines.append(
+                    "    "
+                    f"exit_eval: item_category={r.get('item_category') or '-'} "
+                    f"conservative_exit_price={r.get('conservative_exit_price') or '-'} "
+                    f"max_purchase_price={r.get('max_purchase_price') or '-'} "
+                    f"decision={r.get('decision') or '-'} "
+                    f"stale_quote_found={_bool_text(r.get('stale_quote_found'))}"
+                )
+        return "\n".join(lines)
     if output_format == "csv":
         buf = StringIO()
         writer = csv.DictWriter(buf, fieldnames=fields)
@@ -320,15 +462,49 @@ def _render_recent_items(rows: list[dict], output_format: str) -> str:
         for r in rows:
             writer.writerow({k: r.get(k, "") for k in fields})
         return buf.getvalue().strip()
-    header = "source\treview_status\treview_note\texit_channel\toutcome_status\tactual_sale_price\tactual_profit\toutcome_note\tprice\tprofit\trisk\tfetched_at\ttitle\titem_url"
+    header = "source\treview_status\treview_note\texit_channel\toutcome_status\tactual_sale_price\tactual_profit\toutcome_note\tprice\tprofit\trisk\tfetched_at\titem_category_hint\ttitle\titem_url"
+    if with_buyback_floor:
+        header += "\tbuyback_floor\tfloor_gap\tbuyback_decision\tbuyback_stale_quote_found"
+    if with_exit_eval:
+        header += "\titem_category\tconservative_exit_price\tmax_purchase_price\tdecision\tstale_quote_found"
     lines = [header]
     for r in rows:
-        lines.append(
+        line = (
             f"{r['source']}\t{r['review_status']}\t{r.get('review_note') or ''}\t{r.get('exit_channel') or ''}\t"
             f"{r.get('outcome_status') or ''}\t{r.get('actual_sale_price') or ''}\t{r.get('actual_profit') or ''}\t"
-            f"{r.get('outcome_note') or ''}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r['title']}\t{r['item_url']}"
+            f"{r.get('outcome_note') or ''}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r.get('item_category_hint') or ''}\t{r['title']}\t{r['item_url']}"
         )
+        if with_buyback_floor:
+            line += (
+                f"\t{r.get('buyback_floor') if r.get('buyback_floor') is not None else ''}\t"
+                f"{r.get('floor_gap') if r.get('floor_gap') is not None else ''}\t"
+                f"{r.get('buyback_decision') or ''}\t"
+                f"{_bool_text(r.get('buyback_stale_quote_found'))}"
+            )
+        if with_exit_eval:
+            line += (
+                f"\t{r.get('item_category') or ''}\t{r.get('conservative_exit_price') or ''}\t"
+                f"{r.get('max_purchase_price') or ''}\t{r.get('decision') or ''}\t"
+                f"{_bool_text(r.get('stale_quote_found'))}"
+            )
+        lines.append(line)
     return "\n".join(lines)
+
+
+def _render_item_category_check(payload: dict, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(payload, ensure_ascii=False)
+    distribution = payload.get("item_category_distribution", {})
+    return "\n".join(
+        [
+            f"item_category_column_exists: {'yes' if payload.get('item_category_column_exists') else 'no'}",
+            f"items_total: {payload.get('items_total', 0)}",
+            f"item_category_missing_count: {payload.get('item_category_missing_count', 0)}",
+            f"item_category_filled_count: {payload.get('item_category_filled_count', 0)}",
+            f"item_category_distribution: used={distribution.get('used', 0)} opened_unused={distribution.get('opened_unused', 0)} null={distribution.get('null', 0)}",
+            f"opened_unused_hint_count: {payload.get('opened_unused_hint_count', 0)}",
+        ]
+    )
 
 
 def _render_summary(summary: dict, output_format: str) -> str:
@@ -564,12 +740,41 @@ def _render_buyback_quotes(rows: list[dict], output_format: str) -> str:
             f"[{row['id']}] {row['shop_name']} category={row['item_category']} "
             f"min={row['quoted_price_min']} max={row.get('quoted_price_max') or '-'} "
             f"checked_at={row['quote_checked_at']} active={'yes' if row['shop_is_active'] else 'no'} "
+            f"stale={_bool_text(row.get('stale'))} age_days={row.get('quote_age_days') if row.get('quote_age_days') is not None else '-'} "
             f"condition={row.get('condition_assumption') or '-'}"
         )
     return "\n".join(lines)
 
 
-def _render_exit_evaluation(result, output_format: str) -> str:
+def _render_iosys_fetch_summary(summary, output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(summary.to_dict(), ensure_ascii=False)
+    parts = [
+        f"saved={summary.saved_count}",
+        f"skipped={summary.skipped_count}",
+        f"unmatched_quote_rows={summary.unmatched_quote_rows}",
+        f"expanded_item_count={summary.expanded_item_count}",
+        f"item_category_missing_count={summary.item_category_missing_count}",
+    ]
+    if getattr(summary, "parser_error_count", 0) or getattr(summary, "insert_error_count", 0):
+        parts.append(f"parser_errors={summary.parser_error_count}")
+        parts.append(f"insert_errors={summary.insert_error_count}")
+    lines = [" ".join(parts)]
+    if getattr(summary, "unmatched_reason_counts", None):
+        reason_text = ", ".join(f"{key}={value}" for key, value in sorted(summary.unmatched_reason_counts.items()))
+        lines.append(f"unmatched_reasons: {reason_text}")
+    if getattr(summary, "unmatched_examples", None):
+        lines.append("unmatched_examples:")
+        for example in summary.unmatched_examples:
+            lines.append(
+                "  "
+                f"model={example.model_name_raw} carrier={example.carrier_type} "
+                f"storage={example.storage_gb} category={example.item_category} reason={example.reason}"
+            )
+    return "\n".join(lines)
+
+
+def _render_exit_evaluation(result, output_format: str, comparison: dict | None = None) -> str:
     payload = {
         "source": result.source,
         "item_url": result.item_url,
@@ -588,8 +793,12 @@ def _render_exit_evaluation(result, output_format: str) -> str:
         "target_profit": result.target_profit,
         "stale_quote_found": result.stale_quote_found,
     }
+    if comparison:
+        payload.update(comparison)
     if output_format == "json":
         return json.dumps(payload, ensure_ascii=False)
+    if output_format == "tsv":
+        return "\n".join(f"{key}\t{value}" for key, value in payload.items())
     lines = [
         f"source: {result.source}",
         f"item_url: {result.item_url}",
@@ -604,7 +813,132 @@ def _render_exit_evaluation(result, output_format: str) -> str:
         f"stale_quote_found: {'yes' if result.stale_quote_found else 'no'}",
         f"reason_summary: {result.reason_summary}",
     ]
+    if comparison:
+        lines.extend(
+            [
+                f"actual_sale_price: {comparison.get('actual_sale_price') if comparison.get('actual_sale_price') is not None else '-'}",
+                f"actual_vs_conservative_exit_price: {comparison.get('actual_vs_conservative_exit_price') if comparison.get('actual_vs_conservative_exit_price') is not None else '-'}",
+                f"actual_vs_max_purchase_price: {comparison.get('actual_vs_max_purchase_price') if comparison.get('actual_vs_max_purchase_price') is not None else '-'}",
+            ]
+        )
     return "\n".join(lines)
+
+
+def _render_buyback_config(settings: Settings, output_format: str) -> str:
+    payload = {
+        "stale_quote_days": settings.buyback.stale_quote_days,
+        "target_profit_yen": settings.buyback.target_profit_yen,
+        "estimated_shipping_cost_yen": settings.buyback.estimated_shipping_cost_yen,
+        "estimated_fee_yen": settings.buyback.estimated_fee_yen,
+        "default_haircut_yen": settings.buyback.default_haircut_yen,
+        "grade_pricing_extra_haircut_yen": settings.buyback.grade_pricing_extra_haircut_yen,
+    }
+    if output_format == "json":
+        return json.dumps(payload, ensure_ascii=False)
+    if output_format == "tsv":
+        return "\n".join(f"{key}\t{value}" for key, value in payload.items())
+    return "\n".join(f"{key}: {value}" for key, value in payload.items())
+
+
+def _attach_exit_evaluation(rows: list[dict], service: BuybackEvaluationService) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        current = dict(row)
+        result = service.evaluate_exit(row["source"], row["item_url"])
+        current["item_category"] = result.item_category
+        current["conservative_exit_price"] = result.conservative_exit_price
+        current["max_purchase_price"] = result.max_purchase_price
+        current["decision"] = result.decision
+        current["stale_quote_found"] = result.stale_quote_found
+        purchase_cost = int(current.get("listed_price") or 0)
+        current["buyback_floor"] = result.conservative_exit_price
+        current["floor_gap"] = _diff_or_none(result.conservative_exit_price, purchase_cost)
+        current["buyback_decision"] = result.decision
+        current["buyback_stale_quote_found"] = result.stale_quote_found
+        out.append(current)
+    return out
+
+
+def _format_signed(value) -> str:
+    if value is None or value == "":
+        return "-"
+    value = int(value)
+    return f"+{value}" if value > 0 else str(value)
+
+
+def _build_exit_actual_comparison(
+    repo: ItemRepository,
+    source: str,
+    item_url: str,
+    conservative_exit_price: int | None,
+    max_purchase_price: int | None,
+) -> dict:
+    ctx = repo.get_item_buyback_context(source, item_url)
+    actual_sale_price = None if not ctx else ctx.get("actual_sale_price")
+    return {
+        "actual_sale_price": actual_sale_price,
+        "actual_vs_conservative_exit_price": _diff_or_none(actual_sale_price, conservative_exit_price),
+        "actual_vs_max_purchase_price": _diff_or_none(actual_sale_price, max_purchase_price),
+    }
+
+
+def _build_exit_eval_note_summary(result, comparison: dict | None) -> str:
+    parts = [
+        f"[exit-eval] cat={result.item_category or '-'}",
+        f"floor={result.conservative_exit_price if result.conservative_exit_price is not None else '-'}",
+        f"max_buy={result.max_purchase_price if result.max_purchase_price is not None else '-'}",
+        f"decision={result.decision}",
+    ]
+    if result.stale_quote_found:
+        parts.append("stale=yes")
+    if comparison and comparison.get("actual_sale_price") is not None:
+        parts.append(f"actual={comparison['actual_sale_price']}")
+    return " ".join(parts)
+
+
+def _attach_quote_staleness(rows: list[dict], stale_quote_days: int) -> list[dict]:
+    out: list[dict] = []
+    for row in rows:
+        current = dict(row)
+        current["quote_age_days"] = compute_quote_age_days(row.get("quote_checked_at"))
+        current["stale"] = is_quote_stale(row.get("quote_checked_at"), stale_quote_days)
+        out.append(current)
+    return out
+
+
+def _import_buyback_quotes(repo: ItemRepository, input_path: str, input_format: str) -> int:
+    delimiter = "\t" if input_format == "tsv" else ","
+    inserted = 0
+    with Path(input_path).open("r", encoding="utf-8-sig", newline="") as fh:
+        reader = csv.DictReader(fh, delimiter=delimiter)
+        for row in reader:
+            if not row:
+                continue
+            source = (row.get("source") or "").strip()
+            item_url = (row.get("item_url") or "").strip()
+            shop = (row.get("shop") or row.get("shop_name") or "").strip()
+            category = (row.get("category") or row.get("item_category") or "").strip()
+            quoted_price_min = _required_int(row.get("min") or row.get("quoted_price_min"), "min")
+            quoted_price_max = _optional_int(row.get("max") or row.get("quoted_price_max"))
+            if not source or not item_url or not shop or category not in BUYBACK_ITEM_CATEGORIES:
+                raise ValueError("import row requires source,item_url,shop,category,min")
+            shop_id = repo.resolve_buyback_shop_id(shop)
+            if shop_id is None:
+                raise ValueError(f"shop not found in import: {shop}")
+            repo.insert_buyback_quote(
+                source=source,
+                item_url=item_url,
+                shop_id=shop_id,
+                item_category=category,
+                quoted_price_min=quoted_price_min,
+                quoted_price_max=quoted_price_max,
+                condition_assumption=_blank_to_none(row.get("condition_assumption")),
+                source_url=_blank_to_none(row.get("source_url")),
+                notes=_blank_to_none(row.get("notes")),
+                quote_checked_at=_blank_to_none(row.get("quote_checked_at")),
+            )
+            inserted += 1
+    return inserted
 
 
 def _build_daily_notes_section(day: int, target_date: str, rows: list[dict]) -> str:
@@ -720,6 +1054,37 @@ def _build_buyback_shop_update_fields(args) -> dict:
     elif args.inactive:
         fields["is_active"] = False
     return fields
+
+
+def _bool_text(value) -> str:
+    return "yes" if value else "no"
+
+
+def _diff_or_none(left, right) -> int | None:
+    if left is None or right is None:
+        return None
+    return int(left) - int(right)
+
+
+def _blank_to_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    return stripped or None
+
+
+def _optional_int(value) -> int | None:
+    value = _blank_to_none(value)
+    if value is None:
+        return None
+    return int(value)
+
+
+def _required_int(value, field_name: str) -> int:
+    value = _blank_to_none(value)
+    if value is None:
+        raise ValueError(f"import row requires {field_name}")
+    return int(value)
 
 
 def _upsert_day_section(path: Path, day: int, section: str) -> str:

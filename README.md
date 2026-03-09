@@ -110,6 +110,8 @@ python -m app.main review-status list --limit 20
 python -m app.main review-status list --source mercari_public --status pending --limit 30
 python -m app.main review-status list --format csv --limit 50
 python -m app.main review-status list --format json --status good --limit 20
+python -m app.main review-status list --missing-item-category --limit 50
+python -m app.main review-status list --with-exit-eval --format csv --limit 50
 ```
 
 集計 (summary):
@@ -148,13 +150,42 @@ python -m app.main buyback-shop update --shop 1 --inactive --notes "一時停止
 ```bash
 python -m app.main buyback-quote set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --shop "Janpara Used" --category used --min 61500 --max 65500 --condition-assumption "Bランク想定"
 python -m app.main buyback-quote list --source mercari_public --item-url "https://jp.mercari.com/item/m123"
+python -m app.main buyback-quote import --input buyback_quotes.tsv --format tsv
+python -m app.main buyback-quote fetch-iosys --source-url "https://k-tai-iosys.com/pricelist/smartphone/iphone/"
+python -m app.main buyback-quote fetch-iosys --source-url "https://k-tai-iosys.com/pricelist/smartphone/iphone/" --format json
 ```
 
 出口評価:
 ```bash
 python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123"
+python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123" --save-note
 python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123" --item-category used --format json
+python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123" --format tsv
+python -m app.main buyback config show
 ```
+
+item_category レビュー:
+```bash
+python -m app.main review-status item-category-check
+python -m app.main review-status list --missing-item-category --notified-only --format human
+python -m app.main review-status list --notified-only --with-buyback-floor --format human --limit 20
+python -m app.main review-status ui
+```
+
+補足:
+- `--save-note` は既存の `review_note` を上書きせず、末尾に短い exit evaluation 要約を追記します
+- `buyback config show` で `stale_quote_days` や `target_profit_yen` など現在の閾値を確認できます
+- `evaluate-exit --format tsv` / `--format json` では、`outcome-set` 後なら `actual_sale_price` と `actual_vs_conservative_exit_price` / `actual_vs_max_purchase_price` も確認できます
+- IOSYS 自動取得では `未使用 -> opened_unused`、`中古 -> used` に変換し、`sealed` は初回実装では生成しません
+- IOSYS の model 名比較は完全一致ではなく正規化キーで行います
+- IOSYS 自動取得は最新 quote と `item_category` / `quoted_price_min` / `quoted_price_max` / `condition_assumption` / `source_url` が同値なら insert をスキップします
+- IOSYS 自動取得は `notes` に `iosys:auto:model=...;carrier=...;storage=...` 形式で由来情報を残します
+- `fetch-iosys` は `--format human/json` を選べます。unmatched 件数、簡易理由分類、代表例を確認できます
+- `review-status ui` はローカルの最小レビューUIです。`notified only` が既定で有効です
+- `review-status list --notified-only` で通知済み item だけに絞れます
+- `review-status list --with-buyback-floor` で `buyback_floor` / `floor_gap` / `decision` / `stale_quote_found` を一覧表示できます
+- Telegram 通知には最悪出口メモを 1 行追加しています
+  - 例: `最悪出口: IOSYS下限 27,000円 / 現在価格差 +6,050円 / 最新`
 
 ## cron 実行例
 10分ごと:

@@ -10,6 +10,7 @@ from app.notifiers.telegram import TelegramNotifier
 from app.parsers import build_parser
 from app.repositories import ItemRepository, MarketplaceFetcher
 from app.scoring import ProfitEstimator
+from app.services.buyback import BuybackEvaluationService
 from app.services.filtering import ExclusionService
 from app.utils.rate_limiter import RateLimiter
 
@@ -40,6 +41,7 @@ class MonitorService:
         self.notifier = notifier
         self.filtering = ExclusionService(settings.targets)
         self.estimator = ProfitEstimator(settings.targets, settings.scoring)
+        self.buyback_evaluator = BuybackEvaluationService(settings=settings, repository=repository)
         self.rate_limiter = RateLimiter(settings.app.request_interval_seconds)
 
     def run_once(self) -> RunStats:
@@ -187,7 +189,11 @@ class MonitorService:
             if item.notification_reason and item.notification_reason.startswith("値下げ再通知:"):
                 reason = f"{item.notification_reason}。{reason}"
             item.notification_reason = reason
-            self.notifier.send_item(item, reason)
+            buyback_snapshot = self._build_buyback_snapshot(item)
+            try:
+                self.notifier.send_item(item, reason, buyback_snapshot)
+            except TypeError:
+                self.notifier.send_item(item, reason)
             self.repository.mark_notified(
                 item.raw.source,
                 item.raw.item_url,
@@ -198,6 +204,19 @@ class MonitorService:
             )
             stats.notified += 1
             logger.debug("candidate notified: url=%s notified_reason=%s", item.raw.item_url, reason)
+
+    def _build_buyback_snapshot(self, item: ScoredItem) -> dict | None:
+        try:
+            result = self.buyback_evaluator.evaluate_exit(item.raw.source, item.raw.item_url)
+        except ValueError:
+            return None
+        if result.conservative_exit_price is None:
+            return {"buyback_floor": None, "floor_gap": None, "stale_quote_found": result.stale_quote_found}
+        return {
+            "buyback_floor": result.conservative_exit_price,
+            "floor_gap": int(result.conservative_exit_price) - int(item.purchase_price),
+            "stale_quote_found": result.stale_quote_found,
+        }
 
     def _notify_reason(self, item: ScoredItem) -> str:
         risk_parts = ", ".join(
