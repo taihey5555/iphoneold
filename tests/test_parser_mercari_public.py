@@ -41,3 +41,39 @@ def test_mercari_parse_item_uses_meta_jsonld():
     assert item.description == "SIMフリー 美品"
     assert item.listed_price == 49999
     assert item.image_urls == ["https://img/1.jpg"]
+
+
+def test_mercari_parse_item_prefers_actual_description_over_generic_meta():
+    parser = MercariPublicParser()
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="iPhone 13 128GB">
+        <meta name="description" content="iPhone13 SIMフリー 128GB ピンクをメルカリでお得に通販、誰でも安心して簡単に売り買いが楽しめるフリマサービスです。新品/未使用品も多数、支払いはクレジットカード・キャリア決済・コンビニ・銀行ATMが利用可能で、品物が届いてから出品者に入金される独自システムのため安心です。">
+        <meta property="product:price:amount" content="36000">
+      </head>
+      <body>
+        <div data-testid="item-description">
+          バッテリー87% / 判定○ / 修理歴なし / Face ID問題なし
+        </div>
+      </body>
+    </html>
+    """
+    item = parser.parse_item("mercari_public", "https://jp.mercari.com/item/m111", html)
+    assert item.description == "バッテリー87% / 判定○ / 修理歴なし / Face ID問題なし"
+
+
+def test_mercari_parse_item_ignores_generic_meta_without_real_description():
+    parser = MercariPublicParser()
+    html = """
+    <html>
+      <head>
+        <meta property="og:title" content="iPhone 15 128GB">
+        <meta name="description" content="【美品】iPhone15 128GB ブラックをメルカリでお得に通販、誰でも安心して簡単に売り買いが楽しめるフリマサービスです。新品/未使用品も多数、支払いはクレジットカード・キャリア決済・コンビニ・銀行ATMが利用可能で、品物が届いてから出品者に入金される独自システムのため安心です。">
+        <meta property="product:price:amount" content="73000">
+      </head>
+      <body></body>
+    </html>
+    """
+    item = parser.parse_item("mercari_public", "https://jp.mercari.com/item/m222", html)
+    assert item.description == ""

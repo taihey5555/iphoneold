@@ -95,16 +95,24 @@ def _extract_title(soup: BeautifulSoup) -> str:
 
 
 def _extract_description(soup: BeautifulSoup) -> str:
-    meta = soup.select_one("meta[name='description']")
-    if meta and meta.get("content"):
-        return normalize_ws(meta["content"])
-    for el in soup.select("[data-testid*='description'], .item-description"):
+    for el in soup.select(
+        "[data-testid*='description'], [id*='description'], [class*='description'], .item-description"
+    ):
         text = normalize_ws(el.get_text(" ", strip=True))
         if text:
             return text
     data = _extract_json_ld(soup)
     desc = data.get("description") if isinstance(data, dict) else None
-    return normalize_ws(str(desc)) if desc else ""
+    if desc:
+        text = normalize_ws(str(desc))
+        if not _is_generic_mercari_description(text):
+            return text
+    meta = soup.select_one("meta[name='description']")
+    if meta and meta.get("content"):
+        text = normalize_ws(meta["content"])
+        if not _is_generic_mercari_description(text):
+            return text
+    return ""
 
 
 def _extract_price(soup: BeautifulSoup) -> int:
@@ -198,3 +206,13 @@ def _extract_price_from_text(text: str) -> int:
         return 0
     candidates = [v for v in values if v >= 1000]
     return max(candidates) if candidates else max(values)
+
+
+def _is_generic_mercari_description(text: str) -> bool:
+    normalized = normalize_ws(text)
+    generic_markers = (
+        "をメルカリでお得に通販",
+        "誰でも安心して簡単に売り買いが楽しめるフリマサービス",
+        "品物が届いてから出品者に入金される独自システム",
+    )
+    return all(marker in normalized for marker in generic_markers)

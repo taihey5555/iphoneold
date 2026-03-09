@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.config import TargetConfig
 from app.models import CandidateItem, SourceItem
 from app.utils.text import contains_any, normalize_ws
@@ -12,7 +14,7 @@ class ExclusionService:
     def apply(self, item: SourceItem) -> CandidateItem:
         text = normalize_ws(f"{item.raw.title} {item.raw.description}").lower()
 
-        if contains_any(text, ["箱のみ", "空箱", "box only", "empty box"]):
+        if _is_box_only_listing(text):
             return CandidateItem(raw=item.raw, normalized=item.normalized, exclude_reason="box_only")
         if contains_any(text, ["部品取り", "ジャンク", "junk", "for parts"]):
             return CandidateItem(raw=item.raw, normalized=item.normalized, exclude_reason="junk_or_parts")
@@ -38,3 +40,15 @@ class ExclusionService:
         title_hits = sum(1 for t in self.targets if t.model.lower() in title)
         desc_hits = sum(1 for t in self.targets if t.model.lower() in desc)
         return title_hits > 0 and desc_hits == 0
+
+
+def _is_box_only_listing(text: str) -> bool:
+    if contains_any(text, ["空箱", "box only", "empty box"]):
+        return True
+    if "箱のみ" not in text:
+        return False
+    if re.search(r"付属品.{0,6}箱のみ", text):
+        return False
+    if re.search(r"(ケーブル|充電器).{0,6}(なし|ありません|ございません)", text):
+        return False
+    return True

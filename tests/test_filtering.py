@@ -42,3 +42,14 @@ def test_excludes_network_risk():
     item = SourceItem(raw=_raw("iPhone 14 128GB", "残債あり"), normalized=norm)
     out = svc.apply(item)
     assert out.exclude_reason == "network_restriction_risk"
+
+
+def test_does_not_exclude_when_only_accessories_are_box_only():
+    svc = ExclusionService([TargetConfig(model="iPhone 13", storage_gb=128, keywords=[], expected_resale_base=63000)])
+    norm = NormalizedFields(model_name="iPhone 13", storage_gb=128)
+    item = SourceItem(
+        raw=_raw("iPhone 13 128GB", "iPhone 13 128GB。付属品は箱のみです。ケーブルはありません。バッテリー87%"),
+        normalized=norm,
+    )
+    out = svc.apply(item)
+    assert out.exclude_reason is None

@@ -84,3 +84,15 @@ def test_notification_text_is_used_as_fallback_signal():
     assert norm.storage_gb == 128
     assert norm.sim_free_flag is True
     assert norm.battery_health == 85
+
+
+def test_negative_phrases_do_not_trigger_screen_or_repair_flags():
+    item = _raw(
+        "iPhone 15 128GB",
+        "画面割れなし 修理歴なし バッテリー87% SIMフリー",
+    )
+    norm = RuleBasedExtractor().extract(item)
+
+    assert norm.screen_issue_flag is False
+    assert norm.repair_history_flag is False
+    assert "repair_history" not in norm.risk_flags

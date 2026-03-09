@@ -40,7 +40,7 @@ class RuleBasedExtractor(Extractor):
             lower,
             ["カメラ不良", "カメラ故障", "camera issue", "レンズ割れ", "カメラレンズ割れ", "レンズヒビ"],
         )
-        norm.screen_issue_flag = contains_any(lower, ["画面割れ", "液晶不良", "display issue"])
+        norm.screen_issue_flag = _extract_screen_issue_flag(lower)
         norm.activation_issue_flag = contains_any(lower, ["アクティベーションロック", "activation lock"])
         norm.accessories_flags = _extract_accessories(lower)
         norm.condition_flags = _extract_condition_flags(lower)
@@ -111,21 +111,26 @@ def _extract_battery_health(text: str) -> int | None:
 
 
 def _extract_repair_history_flag(text: str) -> bool | None:
-    return contains_any(
-        text,
-        [
-            "修理歴",
-            "交換歴",
-            "repair history",
-            "修復歴",
-            "画面交換",
-            "バッテリー交換",
-            "パネル交換",
-            "ディスプレイ交換",
-            "非正規修理",
-            "修理品",
-        ],
+    negative_patterns = (
+        r"修理歴(?:は|が)?(?:なし|ありません|ございません)",
+        r"交換歴(?:は|が)?(?:なし|ありません|ございません)",
+        r"修復歴(?:は|が)?(?:なし|ありません|ございません)",
     )
+    if any(re.search(pattern, text) for pattern in negative_patterns):
+        return False
+    positive_words = [
+        "修理歴あり",
+        "交換歴あり",
+        "repair history",
+        "修復歴あり",
+        "画面交換",
+        "バッテリー交換",
+        "パネル交換",
+        "ディスプレイ交換",
+        "非正規修理",
+        "修理品",
+    ]
+    return contains_any(text, positive_words)
 
 
 def _extract_face_id_flag(text: str) -> bool | None:
@@ -200,3 +205,15 @@ def _risk_flags(norm: NormalizedFields, text: str) -> tuple[list[str], int, dict
     breakdown = {flag: RISK_SCORE_WEIGHTS.get(flag, 0) for flag in flags}
     score = sum(breakdown.values())
     return flags, score, breakdown
+
+
+def _extract_screen_issue_flag(text: str) -> bool:
+    negative_patterns = (
+        r"画面割れ(?:は|が)?(?:なし|ありません|ございません)",
+        r"液晶不良(?:は|が)?(?:なし|ありません|ございません)",
+        r"ひび(?:は|が)?(?:なし|ありません|ございません)",
+        r"キズ(?:や|・)?ひびはない",
+    )
+    if any(re.search(pattern, text) for pattern in negative_patterns):
+        return False
+    return contains_any(text, ["画面割れ", "液晶不良", "display issue"])

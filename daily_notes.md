@@ -195,14 +195,14 @@ python -m app.main --config config.yaml --env .env review-status summary --times
                                                                                                   
                                                                                                   
   ## Day4（2026-03-09）                                                                        
-  - [ ] 朝の実行を確認                                                                            
+  - [x] 朝の実行を確認                                                                            
   - [ ] 昼の実行を確認                                                                            
   - [ ] 夜の実行を確認                                                                            
   - [x] 通知件数を記録（通知なしでも記録）                                                        
   - [x] review_status を更新                                                                      
                                                                                                   
   通知記録（通知0件なら「0件」と記入）:                                                           
-  - 件数: 3
+  - 件数: 5
   - URL / 価格 / 想定粗利 / 理由:                                                                 
     - URL: https://jp.mercari.com/item/m32977051747
     - 価格: 20,450円
@@ -219,6 +219,16 @@ python -m app.main --config config.yaml --env .env review-status summary --times
     - 想定粗利: 15,050円
     - 理由: iPhone 15 Plus 128GB SIMフリー / 通知条件クリア
     - 補足: 本体に軽い曲がりあり、画面交換済みかつ非純正品。通知側は iPhone 15 無印ベースで売価計算している可能性あり
+    - URL: https://jp.mercari.com/item/m16452752618
+    - 価格: 36,000円
+    - 想定粗利: 19,050円
+    - 理由: iPhone 13 128GB SIMフリー / 通知条件クリア
+    - 補足: 保存説明文がメルカリ汎用文で、バッテリー・IMEI・状態情報を確認できず保留
+    - URL: https://jp.mercari.com/item/m87345315408
+    - 価格: 73,000円
+    - 想定粗利: 7,070円
+    - 理由: iPhone 15 128GB / 通知条件クリア
+    - 補足: 保存説明文がメルカリ汎用文で、SIM状態・バッテリー・IMEI・傷情報を確認できず保留
                                                                                                   
   review_status 記録:                                                                             
   - good:                                                                                         
@@ -230,6 +240,10 @@ python -m app.main --config config.yaml --env .env review-status summary --times
   - watched:                                                                                      
     - m32977051747
     - 理由: iPhone 14 128GB ミッドナイト。タイトル上は80%SIMフリーで価格は強いが、オークション形式であり、本文情報が薄く、IMEI利用制限修理歴Face IDTrue Tone 等の重要情報が未確認のため保留
+    - m16452752618
+    - 理由: iPhone 13 128GB SIMフリーで価格は強いが、保存説明文が汎用文でバッテリー・IMEI・状態情報が不足するため保留
+    - m87345315408
+    - 理由: iPhone 15 128GB 73,000円で粗利余地はあるが、SIM状態・バッテリー・IMEI・傷情報がなく、保存説明文も汎用文のみのため保留
   - bought:                                                                                       
     - なし
                                                                                                   
@@ -238,6 +252,8 @@ python -m app.main --config config.yaml --env .env review-status summary --times
   - iPhone 15 Plus が iPhone 15 無印ベースで売価計算されている可能性があり、モデル判定と売価見積もりの精度改善余地あり
   - 非純正画面交換軽い曲がりは再販リスクが高く、強めの減点対象にしたい
   - バッテリーが弱くても、価格が十分安ければ good 候補になりうる
+  - 朝の run-once は fetched=9 excluded=6 notified=2 errors=0 で完了
+  - 新規2件はいずれも保存説明文がメルカリ汎用文で、本文抽出の情報量不足が目立った
                                                                                                   
                                                                                                   
   ## Day5（      /      ）                                                                        
