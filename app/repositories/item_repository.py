@@ -42,6 +42,13 @@ class ItemRepository:
                   risk_score INTEGER NOT NULL,
                   risk_flags_json TEXT NOT NULL,
                   review_status TEXT NOT NULL DEFAULT 'pending',
+                  review_note TEXT,
+                  exit_channel TEXT,
+                  outcome_status TEXT NOT NULL DEFAULT 'none',
+                  actual_sale_price INTEGER,
+                  actual_profit INTEGER,
+                  outcome_note TEXT,
+                  outcome_updated_at TEXT,
                   exclude_reason TEXT,
                   UNIQUE(source, item_url)
                 )
@@ -51,6 +58,22 @@ class ItemRepository:
                 conn.execute("ALTER TABLE items ADD COLUMN review_status TEXT NOT NULL DEFAULT 'pending'")
             except sqlite3.OperationalError:
                 pass
+            try:
+                conn.execute("ALTER TABLE items ADD COLUMN review_note TEXT")
+            except sqlite3.OperationalError:
+                pass
+            for alter_sql in (
+                "ALTER TABLE items ADD COLUMN exit_channel TEXT",
+                "ALTER TABLE items ADD COLUMN outcome_status TEXT NOT NULL DEFAULT 'none'",
+                "ALTER TABLE items ADD COLUMN actual_sale_price INTEGER",
+                "ALTER TABLE items ADD COLUMN actual_profit INTEGER",
+                "ALTER TABLE items ADD COLUMN outcome_note TEXT",
+                "ALTER TABLE items ADD COLUMN outcome_updated_at TEXT",
+            ):
+                try:
+                    conn.execute(alter_sql)
+                except sqlite3.OperationalError:
+                    pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notification_history (
@@ -60,6 +83,7 @@ class ItemRepository:
                   dedupe_key TEXT,
                   similarity_key TEXT,
                   notified_price INTEGER,
+                  notification_reason TEXT,
                   notified_at TEXT NOT NULL
                 )
                 """
@@ -76,6 +100,10 @@ class ItemRepository:
                 conn.execute("ALTER TABLE notification_history ADD COLUMN notified_price INTEGER")
             except sqlite3.OperationalError:
                 pass
+            try:
+                conn.execute("ALTER TABLE notification_history ADD COLUMN notification_reason TEXT")
+            except sqlite3.OperationalError:
+                pass
 
     def upsert_scored_item(self, item: ScoredItem) -> None:
         raw = item.raw
@@ -86,9 +114,10 @@ class ItemRepository:
                 INSERT INTO items (
                   source, item_url, title, description, listed_price, shipping_fee, posted_at,
                   seller_name, image_urls_json, fetched_at, normalized_json, expected_resale_price,
-                  estimated_profit, selling_fee, shipping_cost, risk_buffer, risk_score, risk_flags_json, review_status, exclude_reason
+                  estimated_profit, selling_fee, shipping_cost, risk_buffer, risk_score, risk_flags_json, review_status, review_note,
+                  exit_channel, outcome_status, actual_sale_price, actual_profit, outcome_note, outcome_updated_at, exclude_reason
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, item_url) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
@@ -107,6 +136,13 @@ class ItemRepository:
                   risk_score=excluded.risk_score,
                   risk_flags_json=excluded.risk_flags_json,
                   review_status=items.review_status,
+                  review_note=items.review_note,
+                  exit_channel=items.exit_channel,
+                  outcome_status=items.outcome_status,
+                  actual_sale_price=items.actual_sale_price,
+                  actual_profit=items.actual_profit,
+                  outcome_note=items.outcome_note,
+                  outcome_updated_at=items.outcome_updated_at,
                   exclude_reason=excluded.exclude_reason
                 """,
                 (
@@ -129,20 +165,37 @@ class ItemRepository:
                     norm.risk_score,
                     json.dumps(norm.risk_flags, ensure_ascii=False),
                     "pending",
+                    None,
+                    None,
+                    "none",
+                    None,
+                    None,
+                    None,
+                    None,
                     item.exclude_reason,
                 ),
             )
 
-    def update_review_status(self, source: str, item_url: str, review_status: str) -> bool:
+    def update_review_status(self, source: str, item_url: str, review_status: str, review_note: str | None = None) -> bool:
         with self._connect() as conn:
-            cur = conn.execute(
-                """
-                UPDATE items
-                SET review_status = ?
-                WHERE source = ? AND item_url = ?
-                """,
-                (review_status, source, item_url),
-            )
+            if review_note is None:
+                cur = conn.execute(
+                    """
+                    UPDATE items
+                    SET review_status = ?
+                    WHERE source = ? AND item_url = ?
+                    """,
+                    (review_status, source, item_url),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE items
+                    SET review_status = ?, review_note = ?
+                    WHERE source = ? AND item_url = ?
+                    """,
+                    (review_status, review_note, source, item_url),
+                )
         return cur.rowcount > 0
 
     def list_recent_items(
@@ -166,7 +219,8 @@ class ItemRepository:
                 f"""
                 SELECT
                   source, item_url, title, listed_price, estimated_profit,
-                  risk_score, review_status, fetched_at, exclude_reason
+                  risk_score, review_status, review_note, exit_channel, outcome_status,
+                  actual_sale_price, actual_profit, outcome_note, fetched_at, exclude_reason
                 FROM items
                 {where_sql}
                 ORDER BY fetched_at DESC
@@ -185,11 +239,67 @@ class ItemRepository:
                     "estimated_profit": row[4],
                     "risk_score": row[5],
                     "review_status": row[6],
-                    "fetched_at": row[7],
-                    "exclude_reason": row[8],
+                    "review_note": row[7],
+                    "exit_channel": row[8],
+                    "outcome_status": row[9],
+                    "actual_sale_price": row[10],
+                    "actual_profit": row[11],
+                    "outcome_note": row[12],
+                    "fetched_at": row[13],
+                    "exclude_reason": row[14],
                 }
             )
         return out
+
+    def update_outcome(
+        self,
+        source: str,
+        item_url: str,
+        outcome_status: str,
+        exit_channel: str | None = None,
+        actual_sale_price: int | None = None,
+        outcome_note: str | None = None,
+    ) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT listed_price, shipping_fee
+                FROM items
+                WHERE source = ? AND item_url = ?
+                """,
+                (source, item_url),
+            ).fetchone()
+            if not row:
+                return False
+            purchase_price = int(row[0] or 0) + int(row[1] or 0)
+            actual_profit = _compute_actual_profit(
+                purchase_price=purchase_price,
+                exit_channel=exit_channel,
+                actual_sale_price=actual_sale_price,
+            )
+            cur = conn.execute(
+                """
+                UPDATE items
+                SET exit_channel = ?,
+                    outcome_status = ?,
+                    actual_sale_price = ?,
+                    actual_profit = ?,
+                    outcome_note = ?,
+                    outcome_updated_at = ?
+                WHERE source = ? AND item_url = ?
+                """,
+                (
+                    exit_channel,
+                    outcome_status,
+                    actual_sale_price,
+                    actual_profit,
+                    outcome_note,
+                    datetime.now(timezone.utc).isoformat(),
+                    source,
+                    item_url,
+                ),
+            )
+        return cur.rowcount > 0
 
     def summarize_review_status(
         self,
@@ -337,6 +447,100 @@ class ItemRepository:
             "source_timeseries_weekly": weekly_by_source,
         }
 
+    def summarize_outcomes(
+        self,
+        source: str | None = None,
+        exit_channel: str | None = None,
+    ) -> dict:
+        where = ["outcome_status != 'none'"]
+        params: list = []
+        if source:
+            where.append("source = ?")
+            params.append(source)
+        if exit_channel:
+            where.append("exit_channel = ?")
+            params.append(exit_channel)
+        where_sql = f"WHERE {' AND '.join(where)}"
+        with self._connect() as conn:
+            total_row = conn.execute(
+                f"""
+                SELECT COUNT(*), AVG(actual_profit)
+                FROM items
+                {where_sql}
+                """,
+                params,
+            ).fetchone()
+            status_rows = conn.execute(
+                f"""
+                SELECT outcome_status, COUNT(*), AVG(actual_profit)
+                FROM items
+                {where_sql}
+                GROUP BY outcome_status
+                """,
+                params,
+            ).fetchall()
+            channel_rows = conn.execute(
+                f"""
+                SELECT exit_channel, COUNT(*), AVG(actual_profit), SUM(CASE WHEN actual_profit > 0 THEN 1 ELSE 0 END)
+                FROM items
+                {where_sql}
+                GROUP BY exit_channel
+                """,
+                params,
+            ).fetchall()
+            realized_row = conn.execute(
+                f"""
+                SELECT COUNT(*), AVG(actual_profit), SUM(actual_profit)
+                FROM items
+                {where_sql} AND actual_profit IS NOT NULL
+                """,
+                params,
+            ).fetchone()
+
+        total_items = int(total_row[0] or 0) if total_row else 0
+        avg_actual_profit = float(total_row[1]) if total_row and total_row[1] is not None else 0.0
+        realized_count = int(realized_row[0] or 0) if realized_row else 0
+        realized_avg = float(realized_row[1]) if realized_row and realized_row[1] is not None else 0.0
+        realized_sum = int(realized_row[2] or 0) if realized_row and realized_row[2] is not None else 0
+
+        status_map: dict[str, dict] = {}
+        for status, count, avg_profit in status_rows:
+            status_map[status] = {
+                "count": int(count),
+                "average_actual_profit": float(avg_profit) if avg_profit is not None else None,
+            }
+
+        channel_map: dict[str, dict] = {}
+        for channel, count, avg_profit, profitable_count in channel_rows:
+            key = channel or "unknown"
+            total = int(count)
+            profitable = int(profitable_count or 0)
+            channel_map[key] = {
+                "count": total,
+                "average_actual_profit": float(avg_profit) if avg_profit is not None else None,
+                "profitable_count": profitable,
+                "profitable_rate": (profitable / total) if total else 0.0,
+            }
+
+        safe_div = lambda x: (x / total_items) if total_items > 0 else 0.0
+        return {
+            "total_items": total_items,
+            "average_actual_profit": avg_actual_profit,
+            "realized_count": realized_count,
+            "realized_average_actual_profit": realized_avg,
+            "realized_total_profit": realized_sum,
+            "bought_count": status_map.get("bought", {}).get("count", 0),
+            "sold_count": status_map.get("sold", {}).get("count", 0),
+            "buyback_done_count": status_map.get("buyback_done", {}).get("count", 0),
+            "passed_count": status_map.get("passed", {}).get("count", 0),
+            "loss_count": status_map.get("loss", {}).get("count", 0),
+            "sold_rate": safe_div(status_map.get("sold", {}).get("count", 0)),
+            "buyback_done_rate": safe_div(status_map.get("buyback_done", {}).get("count", 0)),
+            "loss_rate": safe_div(status_map.get("loss", {}).get("count", 0)),
+            "status_breakdown": status_map,
+            "channel_breakdown": channel_map,
+        }
+
     def has_recent_notification(
         self,
         source: str,
@@ -371,14 +575,23 @@ class ItemRepository:
         dedupe_key: str | None = None,
         similarity_key: str | None = None,
         notified_price: int | None = None,
+        notification_reason: str | None = None,
     ) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO notification_history (source, item_url, dedupe_key, similarity_key, notified_price, notified_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO notification_history (source, item_url, dedupe_key, similarity_key, notified_price, notification_reason, notified_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (source, item_url, dedupe_key, similarity_key, notified_price, datetime.now(timezone.utc).isoformat()),
+                (
+                    source,
+                    item_url,
+                    dedupe_key,
+                    similarity_key,
+                    notified_price,
+                    notification_reason,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
             )
 
     def recent_notification_context(
@@ -420,6 +633,69 @@ class ItemRepository:
             "same_item_recent": same_item_recent,
             "same_item_notified_price": same_item_price,
         }
+
+    def list_daily_note_items(self, target_date: str, source: str | None = None) -> list[dict]:
+        params: list = [target_date]
+        source_sql = ""
+        if source:
+            source_sql = "AND nh.source = ?"
+            params.append(source)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  i.source,
+                  i.item_url,
+                  i.title,
+                  i.listed_price,
+                  i.estimated_profit,
+                  i.review_status,
+                  i.review_note,
+                  i.exit_channel,
+                  i.outcome_status,
+                  i.actual_sale_price,
+                  i.actual_profit,
+                  i.outcome_note,
+                  nh.notification_reason,
+                  nh.notified_at
+                FROM (
+                  SELECT item_url, source, MAX(notified_at) AS latest_notified_at
+                  FROM notification_history
+                  WHERE substr(notified_at, 1, 10) = ?
+                  {source_sql}
+                  GROUP BY source, item_url
+                ) latest
+                JOIN notification_history nh
+                  ON nh.source = latest.source
+                 AND nh.item_url = latest.item_url
+                 AND nh.notified_at = latest.latest_notified_at
+                JOIN items i
+                  ON i.source = nh.source AND i.item_url = nh.item_url
+                ORDER BY nh.notified_at ASC, i.item_url ASC
+                """,
+                params,
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "source": row[0],
+                    "item_url": row[1],
+                    "title": row[2],
+                    "listed_price": row[3],
+                    "estimated_profit": row[4],
+                    "review_status": row[5],
+                    "review_note": row[6],
+                    "exit_channel": row[7],
+                    "outcome_status": row[8],
+                    "actual_sale_price": row[9],
+                    "actual_profit": row[10],
+                    "outcome_note": row[11],
+                    "notification_reason": row[12],
+                    "notified_at": row[13],
+                }
+            )
+        return out
 
 
 def _build_timeseries(series_rows, mode: str):
@@ -527,3 +803,19 @@ def _norm_to_dict(norm: NormalizedFields) -> dict:
         "risk_score": norm.risk_score,
         "risk_score_breakdown": norm.risk_score_breakdown,
     }
+
+
+def _compute_actual_profit(
+    purchase_price: int,
+    exit_channel: str | None,
+    actual_sale_price: int | None,
+) -> int | None:
+    if actual_sale_price is None:
+        return None
+    if exit_channel == "mercari_resale":
+        selling_fee = int(actual_sale_price * 0.1)
+        shipping_cost = 750
+        return actual_sale_price - purchase_price - selling_fee - shipping_cost
+    if exit_channel == "buyback_shop":
+        return actual_sale_price - purchase_price
+    return actual_sale_price - purchase_price

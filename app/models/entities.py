@@ -24,6 +24,7 @@ class RawListing:
     seller_name: str | None
     image_urls: list[str]
     fetched_at: datetime
+    notification_text: str | None = None
 
 
 @dataclass

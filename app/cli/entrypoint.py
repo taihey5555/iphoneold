@@ -4,6 +4,8 @@ import argparse
 import csv
 import json
 import logging
+import re
+import sys
 from io import StringIO
 from pathlib import Path
 from typing import Sequence
@@ -15,6 +17,8 @@ from app.repositories import ItemRepository, ScraplingFetcher
 from app.services import MonitorService
 
 REVIEW_STATUSES = ("pending", "watched", "good", "bad", "bought")
+EXIT_CHANNELS = ("mercari_resale", "buyback_shop")
+OUTCOME_STATUSES = ("none", "passed", "bought", "sold", "buyback_done", "loss")
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -41,6 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("--source", required=True, help="item source")
     set_cmd.add_argument("--item-url", required=True, help="item url")
     set_cmd.add_argument("--status", required=True, choices=REVIEW_STATUSES, help="new review status")
+    set_cmd.add_argument("--note", default=None, help="optional review note")
+
+    outcome_cmd = review_sub.add_parser("outcome-set", help="Update actual outcome for an item")
+    outcome_cmd.add_argument("--source", required=True, help="item source")
+    outcome_cmd.add_argument("--item-url", required=True, help="item url")
+    outcome_cmd.add_argument("--outcome", required=True, choices=OUTCOME_STATUSES, help="actual outcome status")
+    outcome_cmd.add_argument("--exit-channel", default=None, choices=EXIT_CHANNELS, help="exit channel for realized trade")
+    outcome_cmd.add_argument("--sale-price", type=int, default=None, help="actual sale or buyback price")
+    outcome_cmd.add_argument("--note", default=None, help="optional outcome note")
 
     list_cmd = review_sub.add_parser("list", help="List recent items with review_status")
     list_cmd.add_argument("--limit", type=int, default=20, help="number of rows")
@@ -55,6 +68,18 @@ def build_parser() -> argparse.ArgumentParser:
     summary_cmd.add_argument("--timeseries", default="both", choices=("none", "daily", "weekly", "both"), help="timeseries interval")
     summary_cmd.add_argument("--format", default="tsv", choices=("tsv", "csv", "json"), help="output format")
     summary_cmd.add_argument("--output", default=None, help="write output to file")
+
+    performance_cmd = review_sub.add_parser("performance", help="Summary metrics by actual outcomes")
+    performance_cmd.add_argument("--source", default=None, help="filter by source")
+    performance_cmd.add_argument("--exit-channel", default=None, choices=EXIT_CHANNELS, help="filter by exit channel")
+    performance_cmd.add_argument("--format", default="tsv", choices=("tsv", "csv", "json"), help="output format")
+    performance_cmd.add_argument("--output", default=None, help="write output to file")
+
+    notes_cmd = review_sub.add_parser("daily-notes-sync", help="Sync a Day section in daily_notes.md from review notes and outcomes")
+    notes_cmd.add_argument("--date", required=True, help="target date in YYYY-MM-DD")
+    notes_cmd.add_argument("--day", required=True, type=int, help="day number in daily_notes.md")
+    notes_cmd.add_argument("--notes-file", default="daily_notes.md", help="path to daily notes markdown")
+    notes_cmd.add_argument("--source", default=None, help="filter by source")
     return parser
 
 
@@ -84,7 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "review-status" and args.review_command == "set":
-        ok = repo.update_review_status(args.source, args.item_url, args.status)
+        ok = repo.update_review_status(args.source, args.item_url, args.status, review_note=args.note)
         if not ok:
             logging.getLogger(__name__).error("item not found: source=%s item_url=%s", args.source, args.item_url)
             return 1
@@ -97,10 +122,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         _emit_output(content, args.output)
         return 0
 
+    if args.command == "review-status" and args.review_command == "outcome-set":
+        ok = repo.update_outcome(
+            args.source,
+            args.item_url,
+            args.outcome,
+            exit_channel=args.exit_channel,
+            actual_sale_price=args.sale_price,
+            outcome_note=args.note,
+        )
+        if not ok:
+            logging.getLogger(__name__).error("item not found: source=%s item_url=%s", args.source, args.item_url)
+            return 1
+        print(
+            f"updated: source={args.source} item_url={args.item_url} outcome_status={args.outcome} "
+            f"exit_channel={args.exit_channel or '-'} sale_price={args.sale_price if args.sale_price is not None else '-'}"
+        )
+        return 0
+
     if args.command == "review-status" and args.review_command == "summary":
         summary = repo.summarize_review_status(source=args.source, review_status=args.status, timeseries=args.timeseries)
         content = _render_summary(summary, args.format)
         _emit_output(content, args.output)
+        return 0
+
+    if args.command == "review-status" and args.review_command == "performance":
+        summary = repo.summarize_outcomes(source=args.source, exit_channel=args.exit_channel)
+        content = _render_performance(summary, args.format)
+        _emit_output(content, args.output)
+        return 0
+
+    if args.command == "review-status" and args.review_command == "daily-notes-sync":
+        rows = repo.list_daily_note_items(target_date=args.date, source=args.source)
+        content = _build_daily_notes_section(args.day, args.date, rows)
+        path = Path(args.notes_file)
+        updated = _upsert_day_section(path, args.day, content)
+        path.write_text(updated, encoding="utf-8")
+        print(f"written: {path}")
         return 0
 
     return 0
@@ -111,7 +169,22 @@ def _render_recent_items(rows: list[dict], output_format: str) -> str:
         if output_format == "json":
             return "[]"
         return "no items"
-    fields = ["source", "review_status", "listed_price", "estimated_profit", "risk_score", "fetched_at", "title", "item_url"]
+    fields = [
+        "source",
+        "review_status",
+        "review_note",
+        "exit_channel",
+        "outcome_status",
+        "actual_sale_price",
+        "actual_profit",
+        "outcome_note",
+        "listed_price",
+        "estimated_profit",
+        "risk_score",
+        "fetched_at",
+        "title",
+        "item_url",
+    ]
     if output_format == "json":
         return json.dumps(rows, ensure_ascii=False)
     if output_format == "csv":
@@ -121,10 +194,14 @@ def _render_recent_items(rows: list[dict], output_format: str) -> str:
         for r in rows:
             writer.writerow({k: r.get(k, "") for k in fields})
         return buf.getvalue().strip()
-    header = "source\treview_status\tprice\tprofit\trisk\tfetched_at\ttitle\titem_url"
+    header = "source\treview_status\treview_note\texit_channel\toutcome_status\tactual_sale_price\tactual_profit\toutcome_note\tprice\tprofit\trisk\tfetched_at\ttitle\titem_url"
     lines = [header]
     for r in rows:
-        lines.append(f"{r['source']}\t{r['review_status']}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r['title']}\t{r['item_url']}")
+        lines.append(
+            f"{r['source']}\t{r['review_status']}\t{r.get('review_note') or ''}\t{r.get('exit_channel') or ''}\t"
+            f"{r.get('outcome_status') or ''}\t{r.get('actual_sale_price') or ''}\t{r.get('actual_profit') or ''}\t"
+            f"{r.get('outcome_note') or ''}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r['title']}\t{r['item_url']}"
+        )
     return "\n".join(lines)
 
 
@@ -257,7 +334,174 @@ def _emit_output(content: str, output_path: str | None) -> None:
         path.write_text(content + "\n", encoding="utf-8")
         print(f"written: {path}")
         return
-    print(content)
+    try:
+        sys.stdout.write(content + "\n")
+    except UnicodeEncodeError:
+        buffer = getattr(sys.stdout, "buffer", None)
+        if buffer is not None:
+            encoding = sys.stdout.encoding or "utf-8"
+            buffer.write((content + "\n").encode(encoding, errors="replace"))
+            buffer.flush()
+            return
+        sys.stdout.write((content + "\n").encode("ascii", errors="replace").decode("ascii"))
+
+
+def _render_performance(summary: dict, output_format: str) -> str:
+    status_order = ("passed", "bought", "sold", "buyback_done", "loss")
+    rows = []
+    for status in status_order:
+        current = summary.get("status_breakdown", {}).get(status, {})
+        rows.append(
+            {
+                "outcome_status": status,
+                "count": current.get("count", 0),
+                "average_actual_profit": current.get("average_actual_profit"),
+            }
+        )
+    if output_format == "json":
+        return json.dumps(summary, ensure_ascii=False)
+    if output_format == "csv":
+        buf = StringIO()
+        writer = csv.DictWriter(buf, fieldnames=["outcome_status", "count", "average_actual_profit"])
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        metrics = [
+            f"total_items,{summary.get('total_items', 0)}",
+            f"realized_count,{summary.get('realized_count', 0)}",
+            f"realized_average_actual_profit,{summary.get('realized_average_actual_profit', 0.0)}",
+            f"realized_total_profit,{summary.get('realized_total_profit', 0)}",
+            f"sold_count,{summary.get('sold_count', 0)}",
+            f"buyback_done_count,{summary.get('buyback_done_count', 0)}",
+            f"loss_count,{summary.get('loss_count', 0)}",
+        ]
+        channel_lines = ["exit_channel,count,average_actual_profit,profitable_count,profitable_rate"]
+        for channel, data in sorted(summary.get("channel_breakdown", {}).items()):
+            channel_lines.append(
+                f"{channel},{data.get('count',0)},{data.get('average_actual_profit',0.0)},{data.get('profitable_count',0)},{data.get('profitable_rate',0.0)}"
+            )
+        return buf.getvalue().strip() + "\n" + "\n".join(metrics) + "\n" + "\n".join(channel_lines)
+
+    lines = [
+        f"total_items\t{summary.get('total_items', 0)}",
+        f"realized_count\t{summary.get('realized_count', 0)}",
+        f"average_actual_profit\t{summary.get('average_actual_profit', 0.0)}",
+        f"realized_average_actual_profit\t{summary.get('realized_average_actual_profit', 0.0)}",
+        f"realized_total_profit\t{summary.get('realized_total_profit', 0)}",
+        f"sold_count\t{summary.get('sold_count', 0)}",
+        f"buyback_done_count\t{summary.get('buyback_done_count', 0)}",
+        f"passed_count\t{summary.get('passed_count', 0)}",
+        f"loss_count\t{summary.get('loss_count', 0)}",
+        f"sold_rate\t{summary.get('sold_rate', 0.0)}",
+        f"buyback_done_rate\t{summary.get('buyback_done_rate', 0.0)}",
+        f"loss_rate\t{summary.get('loss_rate', 0.0)}",
+        "outcome_status\tcount\taverage_actual_profit",
+    ]
+    for row in rows:
+        lines.append(f"{row['outcome_status']}\t{row['count']}\t{row['average_actual_profit']}")
+    lines.append("exit_channel\tcount\taverage_actual_profit\tprofitable_count\tprofitable_rate")
+    for channel, data in sorted(summary.get("channel_breakdown", {}).items()):
+        lines.append(
+            f"{channel}\t{data.get('count',0)}\t{data.get('average_actual_profit')}\t{data.get('profitable_count',0)}\t{data.get('profitable_rate',0.0)}"
+        )
+    return "\n".join(lines)
+
+
+def _build_daily_notes_section(day: int, target_date: str, rows: list[dict]) -> str:
+    status_groups = {"good": [], "bad": [], "watched": [], "bought": []}
+    memo_lines: list[str] = []
+    section: list[str] = [
+        f"## Day{day}（{target_date}）",
+        "- [ ] 朝の実行を確認",
+        "- [ ] 昼の実行を確認",
+        "- [ ] 夜の実行を確認",
+        _checkbox_line(bool(rows), "通知件数を記録（通知なしでも記録）"),
+        _checkbox_line(any(r.get("review_status") and r.get("review_status") != "pending" for r in rows), "review_status を更新"),
+        "",
+        "### 通知記録",
+        f"- 件数: {len(rows)}",
+        "- 案件:",
+    ]
+    if not rows:
+        section.append("  - なし")
+    for row in rows:
+        section.extend(
+            [
+                f"  - URL: {row['item_url']}",
+                f"    - 価格: {row['listed_price']:,}円",
+                f"    - 想定粗利: {row['estimated_profit']:,}円",
+                f"    - 通知理由: {_normalize_reason(row.get('notification_reason'))}",
+            ]
+        )
+        item_id = _item_id_from_url(row["item_url"])
+        status = row.get("review_status") or "pending"
+        if status in status_groups and row.get("review_note"):
+            status_groups[status].append((item_id, row["review_note"]))
+        if row.get("outcome_note"):
+            outcome_prefix = _format_outcome_prefix(row)
+            memo_lines.append(f"{item_id}: {outcome_prefix}{row['outcome_note']}")
+    section.extend(["", "### review_status 記録"])
+    for status in ("good", "bad", "watched", "bought"):
+        section.append(f"- {status}:")
+        entries = status_groups[status]
+        if not entries:
+            section.append("  - なし")
+        else:
+            for item_id, note in entries:
+                section.append(f"  - {item_id}")
+                section.append(f"    - 判定理由: {note}")
+        section.append("")
+    section.append("### 気づきメモ")
+    if memo_lines:
+        section.extend(f"- {line}" for line in memo_lines)
+    else:
+        section.append("- なし")
+    return "\n".join(section).rstrip() + "\n"
+
+
+def _normalize_reason(reason: str | None) -> str:
+    if not reason:
+        return "DB未保存"
+    m = re.search(r"target=([^,]+),", reason)
+    if m:
+        return m.group(1).strip()
+    return reason
+
+
+def _format_outcome_prefix(row: dict) -> str:
+    outcome = row.get("outcome_status") or "none"
+    channel = row.get("exit_channel")
+    profit = row.get("actual_profit")
+    parts = [outcome]
+    if channel:
+        parts.append(channel)
+    if profit is not None:
+        parts.append(f"実粗利 {profit:,}円")
+    return " / ".join(parts) + " / "
+
+
+def _item_id_from_url(item_url: str) -> str:
+    return item_url.rstrip("/").split("/")[-1]
+
+
+def _checkbox_line(checked: bool, label: str) -> str:
+    mark = "x" if checked else " "
+    return f"- [{mark}] {label}"
+
+
+def _upsert_day_section(path: Path, day: int, section: str) -> str:
+    original = path.read_text(encoding="utf-8")
+    normalized = original.replace("\r\n", "\n")
+    pattern = re.compile(
+        rf"(?ms)^[ \t]*## Day{day}（.*?）.*?(?=^[ \t]*## Day{day + 1}（|\\Z)"
+    )
+    if pattern.search(normalized):
+        updated = pattern.sub(section.rstrip("\n"), normalized, count=1)
+    else:
+        if not normalized.endswith("\n"):
+            normalized += "\n"
+        updated = normalized + "\n" + section
+    return updated
 
 
 if __name__ == "__main__":

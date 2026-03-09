@@ -84,6 +84,19 @@ pytest -q
 更新:
 ```bash
 python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status good
+python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status watched --note "IMEI未確認のため保留"
+```
+
+結果記録:
+```bash
+python -m app.main review-status outcome-set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --outcome bought
+python -m app.main review-status outcome-set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --outcome sold --exit-channel mercari_resale --sale-price 69800 --note "2日で売却"
+python -m app.main review-status outcome-set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --outcome buyback_done --exit-channel buyback_shop --sale-price 61500
+```
+
+日報同期:
+```bash
+python -m app.main review-status daily-notes-sync --date 2026-03-09 --day 4 --notes-file daily_notes.md
 ```
 
 一覧 (recent):
@@ -100,6 +113,8 @@ python -m app.main review-status summary
 python -m app.main review-status summary --source mercari_public
 python -m app.main review-status summary --status good --format json
 python -m app.main review-status summary --format tsv --output reports/review_summary.tsv
+python -m app.main review-status performance --format tsv
+python -m app.main review-status performance --exit-channel buyback_shop --format json
 ```
 
 source別分析:
@@ -150,6 +165,8 @@ python -m app.main review-status list --format json --status good --output repor
 2. 通知文の `粗利根拠` と `risk内訳` を見て一次判断する
 3. 実際の商品ページでIMEI状態・付属品・写真整合性を最終確認する
 4. 仕入れ判断結果を `review_status` で記録する
-   - 例: `pending` / `buy_candidate` / `skip` / `bought` / `false_positive`
+   - 例: `pending` / `watched` / `good` / `bad` / `bought`
+5. 実際に仕入れた案件は `outcome-set` で出口と実粗利を記録する
+   - 例: `bought` / `sold` / `buyback_done` / `loss` / `passed`
 5. 週次で `false_positive` を見直し、`notification.risk_priority_weights` と閾値を調整する
 # iphoneold

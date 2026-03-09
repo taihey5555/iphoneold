@@ -17,5 +17,11 @@ class Parser(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def parse_item(self, source: str, item_url: str, html: str) -> RawListing:
+    def parse_item(
+        self,
+        source: str,
+        item_url: str,
+        html: str,
+        notification_text: str | None = None,
+    ) -> RawListing:
         raise NotImplementedError

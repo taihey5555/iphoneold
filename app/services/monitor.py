@@ -80,7 +80,12 @@ class MonitorService:
                 try:
                     self.rate_limiter.wait()
                     detail_html = self.fetcher.fetch(link.url, dynamic=self.settings.app.use_dynamic_fetch).html
-                    raw = parser.parse_item(source=source.name, item_url=link.url, html=detail_html)
+                    raw = parser.parse_item(
+                        source=source.name,
+                        item_url=link.url,
+                        html=detail_html,
+                        notification_text=link.title,
+                    )
                     normalized = self.extractor.extract(raw)
                     source_item = SourceItem(raw=raw, normalized=normalized)
                     candidate = self.filtering.apply(source_item)
@@ -189,6 +194,7 @@ class MonitorService:
                 dedupe_key=dedupe_key,
                 similarity_key=similarity_key,
                 notified_price=item.raw.listed_price,
+                notification_reason=item.notification_reason,
             )
             stats.notified += 1
             logger.debug("candidate notified: url=%s notified_reason=%s", item.raw.item_url, reason)

@@ -54,7 +54,13 @@ class MercariPublicParser(Parser):
             out.append(ListingLink(url=url, title=title or "Mercari item", listed_price=price, posted_at=None))
         return out
 
-    def parse_item(self, source: str, item_url: str, html: str) -> RawListing:
+    def parse_item(
+        self,
+        source: str,
+        item_url: str,
+        html: str,
+        notification_text: str | None = None,
+    ) -> RawListing:
         soup = BeautifulSoup(html, "html.parser")
         title = _extract_title(soup)
         description = _extract_description(soup)
@@ -74,6 +80,7 @@ class MercariPublicParser(Parser):
             seller_name=seller_name,
             image_urls=image_urls,
             fetched_at=datetime.now(timezone.utc),
+            notification_text=notification_text,
         )
 
 

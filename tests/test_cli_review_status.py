@@ -81,6 +81,8 @@ def test_cli_review_status_set_and_list(tmp_path, capsys):
             "https://jp.mercari.com/item/m123",
             "--status",
             "good",
+            "--note",
+            "price is strong",
         ]
     )
     assert rc == 0
@@ -106,6 +108,7 @@ def test_cli_review_status_set_and_list(tmp_path, capsys):
     assert "review_status" in out2
     assert "mercari_public" in out2
     assert "good" in out2
+    assert "price is strong" in out2
 
 
 def test_cli_review_status_set_not_found(tmp_path):
@@ -218,7 +221,7 @@ def test_cli_review_status_list_formats_and_summary(tmp_path, capsys):
         == 0
     )
     list_csv = capsys.readouterr().out
-    assert "source,review_status,listed_price" in list_csv
+    assert "source,review_status,review_note,exit_channel,outcome_status,actual_sale_price,actual_profit,outcome_note,listed_price" in list_csv
 
     assert (
         main(
@@ -264,6 +267,272 @@ def test_cli_review_status_list_formats_and_summary(tmp_path, capsys):
     assert payload["good_count"] == 1
     assert payload["total_items"] == 1
     assert payload["status_average_estimated_profit"]["good"] is not None
+
+
+def test_cli_review_status_set_note_persists_in_json(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    _insert_item(db_path, "mercari_public", "https://jp.mercari.com/item/n1")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "set",
+                "--source",
+                "mercari_public",
+                "--item-url",
+                "https://jp.mercari.com/item/n1",
+                "--status",
+                "watched",
+                "--note",
+                "IMEI未確認のため保留",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--format",
+                "json",
+                "--limit",
+                "10",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload[0]["review_note"] == "IMEI未確認のため保留"
+
+
+def test_cli_outcome_set_and_performance_summary(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    _insert_item(db_path, "mercari_public", "https://jp.mercari.com/item/p1")
+    _insert_item(db_path, "mercari_public", "https://jp.mercari.com/item/p2")
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "outcome-set",
+                "--source",
+                "mercari_public",
+                "--item-url",
+                "https://jp.mercari.com/item/p1",
+                "--outcome",
+                "sold",
+                "--exit-channel",
+                "mercari_resale",
+                "--sale-price",
+                "65000",
+                "--note",
+                "sold in 2 days",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "outcome-set",
+                "--source",
+                "mercari_public",
+                "--item-url",
+                "https://jp.mercari.com/item/p2",
+                "--outcome",
+                "buyback_done",
+                "--exit-channel",
+                "buyback_shop",
+                "--sale-price",
+                "52000",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--format",
+                "json",
+                "--limit",
+                "10",
+            ]
+        )
+        == 0
+    )
+    recent = json.loads(capsys.readouterr().out)
+    assert {row["outcome_status"] for row in recent} == {"sold", "buyback_done"}
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "performance",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total_items"] == 2
+    assert payload["realized_count"] == 2
+    assert payload["sold_count"] == 1
+    assert payload["buyback_done_count"] == 1
+    assert "mercari_resale" in payload["channel_breakdown"]
+    assert "buyback_shop" in payload["channel_breakdown"]
+
+
+def test_cli_daily_notes_sync_updates_target_day_from_review_and_outcome_notes(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    notes_path = tmp_path / "daily_notes.md"
+    _write_test_config(config_path, db_path)
+    _insert_item(db_path, "mercari_public", "https://jp.mercari.com/item/d1")
+    _insert_item(db_path, "mercari_public", "https://jp.mercari.com/item/d2")
+
+    main(
+        [
+            "--config",
+            str(config_path),
+            "--env",
+            str(tmp_path / ".env"),
+            "review-status",
+            "set",
+            "--source",
+            "mercari_public",
+            "--item-url",
+            "https://jp.mercari.com/item/d1",
+            "--status",
+            "good",
+            "--note",
+            "IMEI確認済みで価格が強い",
+        ]
+    )
+    main(
+        [
+            "--config",
+            str(config_path),
+            "--env",
+            str(tmp_path / ".env"),
+            "review-status",
+            "set",
+            "--source",
+            "mercari_public",
+            "--item-url",
+            "https://jp.mercari.com/item/d2",
+            "--status",
+            "watched",
+            "--note",
+            "バッテリー弱めのため保留",
+        ]
+    )
+    main(
+        [
+            "--config",
+            str(config_path),
+            "--env",
+            str(tmp_path / ".env"),
+            "review-status",
+            "outcome-set",
+            "--source",
+            "mercari_public",
+            "--item-url",
+            "https://jp.mercari.com/item/d1",
+            "--outcome",
+            "sold",
+            "--exit-channel",
+            "mercari_resale",
+            "--sale-price",
+            "65000",
+            "--note",
+            "即売れ",
+        ]
+    )
+    capsys.readouterr()
+
+    repo = ItemRepository(str(db_path))
+    repo.mark_notified(
+        "mercari_public",
+        "https://jp.mercari.com/item/d1",
+        notification_reason="notified_reason(profit_current=10000,profit_threshold=3000, risk_current=0,risk_threshold=4, target=iPhone 14 128GB, priority_score=10000)",
+    )
+    repo.mark_notified(
+        "mercari_public",
+        "https://jp.mercari.com/item/d2",
+        notification_reason="notified_reason(profit_current=6000,profit_threshold=3000, risk_current=2,risk_threshold=4, target=iPhone 14 128GB, priority_score=4800)",
+    )
+
+    notes_path.write_text(
+        "# log\n\n## Day5（      /      ）\n- [ ] 朝の実行を確認\n- [ ] 昼の実行を確認\n- [ ] 夜の実行を確認\n- [ ] 通知件数を記録（通知なしでも記録）\n- [ ] review_status を更新\n\n### 通知記録\n- 件数:\n- 案件:\n  - なし\n\n### review_status 記録\n- good:\n  - なし\n\n- bad:\n  - なし\n\n- watched:\n  - なし\n\n- bought:\n  - なし\n\n### 気づきメモ\n- なし\n",
+        encoding="utf-8",
+    )
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "daily-notes-sync",
+                "--date",
+                "2026-03-09",
+                "--day",
+                "5",
+                "--notes-file",
+                str(notes_path),
+            ]
+        )
+        == 0
+    )
+    content = notes_path.read_text(encoding="utf-8")
+    assert "## Day5（2026-03-09）" in content
+    assert "- 件数: 2" in content
+    assert "https://jp.mercari.com/item/d1" in content
+    assert "https://jp.mercari.com/item/d2" in content
+    assert "d1" in content
+    assert "判定理由: IMEI確認済みで価格が強い" in content
+    assert "判定理由: バッテリー弱めのため保留" in content
+    assert "sold / mercari_resale / 実粗利" in content
 
 
 def test_cli_review_status_output_file(tmp_path, capsys):

@@ -11,6 +11,7 @@ RISK_SCORE_WEIGHTS = {
     "face_id_not_working": 4,
     "non_genuine_display": 3,
     "camera_issue": 3,
+    "frame_damage": 3,
     "charging_issue": 3,
     "sim_issue": 3,
     "repair_history": 2,
@@ -22,7 +23,7 @@ RISK_SCORE_WEIGHTS = {
 
 class RuleBasedExtractor(Extractor):
     def extract(self, item: RawListing) -> NormalizedFields:
-        text = normalize_ws(f"{item.title} {item.description}")
+        text = normalize_ws(f"{item.title} {item.description} {item.notification_text or ''}")
         lower = text.lower()
 
         norm = NormalizedFields()
@@ -33,9 +34,12 @@ class RuleBasedExtractor(Extractor):
         norm.sim_free_flag = _extract_sim_free(lower)
         norm.battery_health = _extract_battery_health(text)
         norm.network_restriction_status = _extract_network_status(lower)
-        norm.repair_history_flag = contains_any(lower, ["修理歴", "交換歴", "repair history", "修復歴"])
-        norm.face_id_flag = not contains_any(lower, ["face id不可", "face id使えない", "face id ng"])
-        norm.camera_issue_flag = contains_any(lower, ["カメラ不良", "カメラ故障", "camera issue"])
+        norm.repair_history_flag = _extract_repair_history_flag(lower)
+        norm.face_id_flag = _extract_face_id_flag(lower)
+        norm.camera_issue_flag = contains_any(
+            lower,
+            ["カメラ不良", "カメラ故障", "camera issue", "レンズ割れ", "カメラレンズ割れ", "レンズヒビ"],
+        )
         norm.screen_issue_flag = contains_any(lower, ["画面割れ", "液晶不良", "display issue"])
         norm.activation_issue_flag = contains_any(lower, ["アクティベーションロック", "activation lock"])
         norm.accessories_flags = _extract_accessories(lower)
@@ -45,12 +49,24 @@ class RuleBasedExtractor(Extractor):
 
 
 def _extract_model(text: str) -> str | None:
-    if "iphone 15" in text.lower():
-        return "iPhone 15"
-    if "iphone 14" in text.lower():
-        return "iPhone 14"
-    if "iphone 13" in text.lower():
-        return "iPhone 13"
+    lower = text.lower()
+    patterns = (
+        (r"iphone\s*15\s*pro\s*max", "iPhone 15 Pro Max"),
+        (r"iphone\s*15\s*pro", "iPhone 15 Pro"),
+        (r"iphone\s*15\s*plus", "iPhone 15 Plus"),
+        (r"iphone\s*15(?!\s*(?:pro|max|plus))", "iPhone 15"),
+        (r"iphone\s*14\s*pro\s*max", "iPhone 14 Pro Max"),
+        (r"iphone\s*14\s*pro", "iPhone 14 Pro"),
+        (r"iphone\s*14\s*plus", "iPhone 14 Plus"),
+        (r"iphone\s*14(?!\s*(?:pro|max|plus))", "iPhone 14"),
+        (r"iphone\s*13\s*pro\s*max", "iPhone 13 Pro Max"),
+        (r"iphone\s*13\s*pro", "iPhone 13 Pro"),
+        (r"iphone\s*13\s*mini", "iPhone 13 mini"),
+        (r"iphone\s*13(?!\s*(?:pro|max|mini))", "iPhone 13"),
+    )
+    for pattern, model in patterns:
+        if re.search(pattern, lower):
+            return model
     return None
 
 
@@ -94,6 +110,32 @@ def _extract_battery_health(text: str) -> int | None:
     return max(0, min(100, int(m.group(1))))
 
 
+def _extract_repair_history_flag(text: str) -> bool | None:
+    return contains_any(
+        text,
+        [
+            "修理歴",
+            "交換歴",
+            "repair history",
+            "修復歴",
+            "画面交換",
+            "バッテリー交換",
+            "パネル交換",
+            "ディスプレイ交換",
+            "非正規修理",
+            "修理品",
+        ],
+    )
+
+
+def _extract_face_id_flag(text: str) -> bool | None:
+    if contains_any(text, ["face id不可", "face id使えない", "face id ng", "face id不良", "face id使えません"]):
+        return False
+    if contains_any(text, ["face id ok", "face id問題なし", "face id正常", "face id使えます"]):
+        return True
+    return None
+
+
 def _extract_network_status(text: str) -> str | None:
     if contains_any(text, ["〇", "○", "判定○", "network ok"]):
         return "ok"
@@ -119,7 +161,8 @@ def _extract_condition_flags(text: str) -> list[str]:
     flags: list[str] = []
     map_words = {
         "battery_service": ["バッテリー修理", "battery service"],
-        "non_genuine_display": ["非純正ディスプレイ", "non genuine display"],
+        "non_genuine_display": ["非純正ディスプレイ", "非純正画面", "非純正品", "互換パネル", "non genuine display"],
+        "frame_damage": ["曲がり", "歪み", "フレーム曲がり", "筐体曲がり"],
         "charging_issue": ["充電不良", "charging issue"],
         "sim_issue": ["sim不良", "sim認識しない"],
     }
@@ -138,6 +181,8 @@ def _risk_flags(norm: NormalizedFields, text: str) -> tuple[list[str], int, dict
         flags.append("face_id_not_working")
     if "non_genuine_display" in norm.condition_flags:
         flags.append("non_genuine_display")
+    if "frame_damage" in norm.condition_flags:
+        flags.append("frame_damage")
     if norm.camera_issue_flag:
         flags.append("camera_issue")
     if "charging_issue" in norm.condition_flags:
@@ -150,7 +195,7 @@ def _risk_flags(norm: NormalizedFields, text: str) -> tuple[list[str], int, dict
         flags.append("network_restriction_unknown")
     if norm.activation_issue_flag:
         flags.append("activation_lock_risk")
-    if contains_any(text, ["説明と写真が違う", "現状優先", "未確認"]):
+    if contains_any(text, ["説明と写真が違う", "現状優先", "未確認", "本文情報は薄い"]):
         flags.append("description_inconsistency")
     breakdown = {flag: RISK_SCORE_WEIGHTS.get(flag, 0) for flag in flags}
     score = sum(breakdown.values())
