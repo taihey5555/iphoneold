@@ -54,6 +54,14 @@ notification:
   reprice_min_drop_yen: 1000
   reprice_min_drop_rate: 0.03
 
+buyback:
+  target_profit_yen: 5000
+  estimated_shipping_cost_yen: 750
+  estimated_fee_yen: 0
+  default_haircut_yen: 2000
+  grade_pricing_extra_haircut_yen: 1000
+  stale_quote_days: 14
+
 targets:
   - model: "iPhone 13"
     storage_gb: 128

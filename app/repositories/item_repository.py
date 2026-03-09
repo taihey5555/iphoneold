@@ -49,6 +49,7 @@ class ItemRepository:
                   actual_profit INTEGER,
                   outcome_note TEXT,
                   outcome_updated_at TEXT,
+                  item_category TEXT,
                   exclude_reason TEXT,
                   UNIQUE(source, item_url)
                 )
@@ -69,11 +70,13 @@ class ItemRepository:
                 "ALTER TABLE items ADD COLUMN actual_profit INTEGER",
                 "ALTER TABLE items ADD COLUMN outcome_note TEXT",
                 "ALTER TABLE items ADD COLUMN outcome_updated_at TEXT",
+                "ALTER TABLE items ADD COLUMN item_category TEXT",
             ):
                 try:
                     conn.execute(alter_sql)
                 except sqlite3.OperationalError:
                     pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_items_item_category ON items(item_category)")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS notification_history (
@@ -104,6 +107,45 @@ class ItemRepository:
                 conn.execute("ALTER TABLE notification_history ADD COLUMN notification_reason TEXT")
             except sqlite3.OperationalError:
                 pass
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS buyback_shops (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  shop_name TEXT NOT NULL UNIQUE,
+                  accepts_sealed INTEGER NOT NULL DEFAULT 0,
+                  accepts_opened_unused INTEGER NOT NULL DEFAULT 0,
+                  accepts_used INTEGER NOT NULL DEFAULT 1,
+                  supports_grade_pricing INTEGER NOT NULL DEFAULT 0,
+                  supports_junk INTEGER NOT NULL DEFAULT 0,
+                  notes TEXT,
+                  is_active INTEGER NOT NULL DEFAULT 1
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS buyback_quotes (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  source TEXT NOT NULL,
+                  item_url TEXT NOT NULL,
+                  shop_id INTEGER NOT NULL,
+                  item_category TEXT NOT NULL,
+                  quoted_price_min INTEGER NOT NULL,
+                  quoted_price_max INTEGER,
+                  condition_assumption TEXT,
+                  quote_checked_at TEXT NOT NULL,
+                  source_url TEXT,
+                  notes TEXT,
+                  FOREIGN KEY (shop_id) REFERENCES buyback_shops(id)
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_buyback_quotes_item ON buyback_quotes(source, item_url, quote_checked_at DESC, id DESC)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_buyback_quotes_shop ON buyback_quotes(shop_id, quote_checked_at DESC, id DESC)"
+            )
 
     def upsert_scored_item(self, item: ScoredItem) -> None:
         raw = item.raw
@@ -116,8 +158,8 @@ class ItemRepository:
                   seller_name, image_urls_json, fetched_at, normalized_json, expected_resale_price,
                   estimated_profit, selling_fee, shipping_cost, risk_buffer, risk_score, risk_flags_json, review_status, review_note,
                   exit_channel, outcome_status, actual_sale_price, actual_profit, outcome_note, outcome_updated_at, exclude_reason
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  , item_category)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source, item_url) DO UPDATE SET
                   title=excluded.title,
                   description=excluded.description,
@@ -143,6 +185,7 @@ class ItemRepository:
                   actual_profit=items.actual_profit,
                   outcome_note=items.outcome_note,
                   outcome_updated_at=items.outcome_updated_at,
+                  item_category=items.item_category,
                   exclude_reason=excluded.exclude_reason
                 """,
                 (
@@ -173,6 +216,7 @@ class ItemRepository:
                     None,
                     None,
                     item.exclude_reason,
+                    None,
                 ),
             )
 
@@ -196,6 +240,18 @@ class ItemRepository:
                     """,
                     (review_status, review_note, source, item_url),
                 )
+        return cur.rowcount > 0
+
+    def update_item_category(self, source: str, item_url: str, item_category: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                UPDATE items
+                SET item_category = ?
+                WHERE source = ? AND item_url = ?
+                """,
+                (item_category, source, item_url),
+            )
         return cur.rowcount > 0
 
     def list_recent_items(
@@ -250,6 +306,281 @@ class ItemRepository:
                 }
             )
         return out
+
+    def add_buyback_shop(
+        self,
+        shop_name: str,
+        accepts_sealed: bool = False,
+        accepts_opened_unused: bool = False,
+        accepts_used: bool = True,
+        supports_grade_pricing: bool = False,
+        supports_junk: bool = False,
+        notes: str | None = None,
+        is_active: bool = True,
+    ) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO buyback_shops (
+                  shop_name, accepts_sealed, accepts_opened_unused, accepts_used,
+                  supports_grade_pricing, supports_junk, notes, is_active
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    shop_name,
+                    _bool_to_int(accepts_sealed),
+                    _bool_to_int(accepts_opened_unused),
+                    _bool_to_int(accepts_used),
+                    _bool_to_int(supports_grade_pricing),
+                    _bool_to_int(supports_junk),
+                    notes,
+                    _bool_to_int(is_active),
+                ),
+            )
+        return int(cur.lastrowid)
+
+    def update_buyback_shop(self, shop_id: int, **fields) -> bool:
+        if not fields:
+            return False
+        allowed = {
+            "shop_name",
+            "accepts_sealed",
+            "accepts_opened_unused",
+            "accepts_used",
+            "supports_grade_pricing",
+            "supports_junk",
+            "notes",
+            "is_active",
+        }
+        sets: list[str] = []
+        params: list = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            if key.startswith("accepts_") or key.startswith("supports_") or key == "is_active":
+                value = _bool_to_int(bool(value))
+            sets.append(f"{key} = ?")
+            params.append(value)
+        if not sets:
+            return False
+        params.append(shop_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"""
+                UPDATE buyback_shops
+                SET {", ".join(sets)}
+                WHERE id = ?
+                """,
+                params,
+            )
+        return cur.rowcount > 0
+
+    def list_buyback_shops(self, active_only: bool = False) -> list[dict]:
+        where_sql = "WHERE is_active = 1" if active_only else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                  id, shop_name, accepts_sealed, accepts_opened_unused, accepts_used,
+                  supports_grade_pricing, supports_junk, notes, is_active
+                FROM buyback_shops
+                {where_sql}
+                ORDER BY is_active DESC, shop_name ASC, id ASC
+                """
+            ).fetchall()
+        return [_row_to_buyback_shop_dict(row) for row in rows]
+
+    def resolve_buyback_shop_id(self, shop_name_or_id: str) -> int | None:
+        lookup_id = _coerce_int(shop_name_or_id)
+        with self._connect() as conn:
+            if lookup_id is not None:
+                row = conn.execute("SELECT id FROM buyback_shops WHERE id = ?", (lookup_id,)).fetchone()
+                if row:
+                    return int(row[0])
+            row = conn.execute(
+                "SELECT id FROM buyback_shops WHERE shop_name = ? COLLATE NOCASE",
+                (shop_name_or_id,),
+            ).fetchone()
+        return int(row[0]) if row else None
+
+    def insert_buyback_quote(
+        self,
+        source: str,
+        item_url: str,
+        shop_id: int,
+        item_category: str,
+        quoted_price_min: int,
+        quoted_price_max: int | None = None,
+        condition_assumption: str | None = None,
+        source_url: str | None = None,
+        notes: str | None = None,
+        quote_checked_at: str | None = None,
+    ) -> int:
+        checked_at = quote_checked_at or datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO buyback_quotes (
+                  source, item_url, shop_id, item_category, quoted_price_min, quoted_price_max,
+                  condition_assumption, quote_checked_at, source_url, notes
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source,
+                    item_url,
+                    shop_id,
+                    item_category,
+                    quoted_price_min,
+                    quoted_price_max,
+                    condition_assumption,
+                    checked_at,
+                    source_url,
+                    notes,
+                ),
+            )
+        return int(cur.lastrowid)
+
+    def list_buyback_quotes(self, source: str, item_url: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  q.id,
+                  q.source,
+                  q.item_url,
+                  q.shop_id,
+                  s.shop_name,
+                  q.item_category,
+                  q.quoted_price_min,
+                  q.quoted_price_max,
+                  q.condition_assumption,
+                  q.quote_checked_at,
+                  q.source_url,
+                  q.notes,
+                  s.is_active
+                FROM buyback_quotes q
+                JOIN buyback_shops s ON s.id = q.shop_id
+                WHERE q.source = ? AND q.item_url = ?
+                ORDER BY q.quote_checked_at DESC, q.id DESC
+                """,
+                (source, item_url),
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "id": row[0],
+                    "source": row[1],
+                    "item_url": row[2],
+                    "shop_id": row[3],
+                    "shop_name": row[4],
+                    "item_category": row[5],
+                    "quoted_price_min": row[6],
+                    "quoted_price_max": row[7],
+                    "condition_assumption": row[8],
+                    "quote_checked_at": row[9],
+                    "source_url": row[10],
+                    "notes": row[11],
+                    "shop_is_active": bool(row[12]),
+                }
+            )
+        return out
+
+    def list_latest_buyback_quotes_by_shop(self, source: str, item_url: str) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                  q.id,
+                  q.source,
+                  q.item_url,
+                  q.shop_id,
+                  s.shop_name,
+                  q.item_category,
+                  q.quoted_price_min,
+                  q.quoted_price_max,
+                  q.condition_assumption,
+                  q.quote_checked_at,
+                  q.source_url,
+                  q.notes,
+                  s.accepts_sealed,
+                  s.accepts_opened_unused,
+                  s.accepts_used,
+                  s.supports_grade_pricing,
+                  s.supports_junk,
+                  s.is_active
+                FROM buyback_quotes q
+                JOIN buyback_shops s ON s.id = q.shop_id
+                WHERE q.source = ? AND q.item_url = ?
+                  AND q.id = (
+                    SELECT q2.id
+                    FROM buyback_quotes q2
+                    WHERE q2.source = q.source
+                      AND q2.item_url = q.item_url
+                      AND q2.shop_id = q.shop_id
+                    ORDER BY q2.quote_checked_at DESC, q2.id DESC
+                    LIMIT 1
+                  )
+                ORDER BY q.shop_id ASC
+                """,
+                (source, item_url),
+            ).fetchall()
+        out: list[dict] = []
+        for row in rows:
+            out.append(
+                {
+                    "id": row[0],
+                    "source": row[1],
+                    "item_url": row[2],
+                    "shop_id": row[3],
+                    "shop_name": row[4],
+                    "item_category": row[5],
+                    "quoted_price_min": row[6],
+                    "quoted_price_max": row[7],
+                    "condition_assumption": row[8],
+                    "quote_checked_at": row[9],
+                    "source_url": row[10],
+                    "notes": row[11],
+                    "accepts_sealed": bool(row[12]),
+                    "accepts_opened_unused": bool(row[13]),
+                    "accepts_used": bool(row[14]),
+                    "supports_grade_pricing": bool(row[15]),
+                    "supports_junk": bool(row[16]),
+                    "shop_is_active": bool(row[17]),
+                }
+            )
+        return out
+
+    def get_item_buyback_context(self, source: str, item_url: str) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  source, item_url, title, listed_price, shipping_fee, estimated_profit,
+                  selling_fee, risk_score, risk_flags_json, item_category, review_status, outcome_status
+                FROM items
+                WHERE source = ? AND item_url = ?
+                """,
+                (source, item_url),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "source": row[0],
+            "item_url": row[1],
+            "title": row[2],
+            "listed_price": row[3],
+            "shipping_fee": row[4],
+            "estimated_profit": row[5],
+            "selling_fee": row[6],
+            "risk_score": row[7],
+            "risk_flags": json.loads(row[8] or "[]"),
+            "item_category": row[9],
+            "review_status": row[10],
+            "outcome_status": row[11],
+        }
 
     def update_outcome(
         self,
@@ -819,3 +1150,30 @@ def _compute_actual_profit(
     if exit_channel == "buyback_shop":
         return actual_sale_price - purchase_price
     return actual_sale_price - purchase_price
+
+
+def _bool_to_int(value: bool) -> int:
+    return 1 if value else 0
+
+
+def _coerce_int(value) -> int | None:
+    try:
+        if value is None or value == "":
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _row_to_buyback_shop_dict(row) -> dict:
+    return {
+        "id": row[0],
+        "shop_name": row[1],
+        "accepts_sealed": bool(row[2]),
+        "accepts_opened_unused": bool(row[3]),
+        "accepts_used": bool(row[4]),
+        "supports_grade_pricing": bool(row[5]),
+        "supports_junk": bool(row[6]),
+        "notes": row[7],
+        "is_active": bool(row[8]),
+    }

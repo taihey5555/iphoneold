@@ -87,12 +87,23 @@ class NotificationConfig:
 
 
 @dataclass(frozen=True)
+class BuybackConfig:
+    target_profit_yen: int = 5000
+    estimated_shipping_cost_yen: int = 750
+    estimated_fee_yen: int = 0
+    default_haircut_yen: int = 2000
+    grade_pricing_extra_haircut_yen: int = 1000
+    stale_quote_days: int = 14
+
+
+@dataclass(frozen=True)
 class Settings:
     app: AppConfig
     scoring: ScoringConfig
     targets: list[TargetConfig]
     sources: list[SourceConfig]
     notification: NotificationConfig = field(default_factory=NotificationConfig)
+    buyback: BuybackConfig = field(default_factory=BuybackConfig)
 
     @classmethod
     def load(cls, config_path: str = "config.yaml", env_path: str = ".env") -> "Settings":
@@ -101,6 +112,7 @@ class Settings:
         app_cfg = AppConfig(**config_data["app"])
         scoring_cfg = ScoringConfig(**config_data.get("scoring", {}))
         notification_cfg = NotificationConfig(**config_data.get("notification", {}))
+        buyback_cfg = BuybackConfig(**config_data.get("buyback", {}))
         targets = [TargetConfig(**row) for row in config_data.get("targets", [])]
         sources = [SourceConfig(**row) for row in config_data.get("sources", [])]
         return cls(
@@ -109,6 +121,7 @@ class Settings:
             targets=targets,
             sources=sources,
             notification=notification_cfg,
+            buyback=buyback_cfg,
         )
 
 

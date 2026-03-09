@@ -12,9 +12,10 @@ from typing import Sequence
 
 from app.config import Settings
 from app.extractors.rule_based import RuleBasedExtractor
+from app.models import BUYBACK_ITEM_CATEGORIES
 from app.notifiers import TelegramNotifier
 from app.repositories import ItemRepository, ScraplingFetcher
-from app.services import MonitorService
+from app.services import BuybackEvaluationService, MonitorService
 
 REVIEW_STATUSES = ("pending", "watched", "good", "bad", "bought")
 EXIT_CHANNELS = ("mercari_resale", "buyback_shop")
@@ -46,6 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     set_cmd.add_argument("--item-url", required=True, help="item url")
     set_cmd.add_argument("--status", required=True, choices=REVIEW_STATUSES, help="new review status")
     set_cmd.add_argument("--note", default=None, help="optional review note")
+    set_cmd.add_argument("--item-category", default=None, choices=BUYBACK_ITEM_CATEGORIES, help="optional item category")
 
     outcome_cmd = review_sub.add_parser("outcome-set", help="Update actual outcome for an item")
     outcome_cmd.add_argument("--source", required=True, help="item source")
@@ -80,6 +82,66 @@ def build_parser() -> argparse.ArgumentParser:
     notes_cmd.add_argument("--day", required=True, type=int, help="day number in daily_notes.md")
     notes_cmd.add_argument("--notes-file", default="daily_notes.md", help="path to daily notes markdown")
     notes_cmd.add_argument("--source", default=None, help="filter by source")
+
+    eval_cmd = review_sub.add_parser("evaluate-exit", help="Evaluate buyback exit floor for an item")
+    eval_cmd.add_argument("--source", required=True, help="item source")
+    eval_cmd.add_argument("--item-url", required=True, help="item url")
+    eval_cmd.add_argument("--item-category", default=None, choices=BUYBACK_ITEM_CATEGORIES, help="override item category")
+    eval_cmd.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+
+    buyback_shop = sub.add_parser("buyback-shop", help="Buyback shop master operations")
+    shop_sub = buyback_shop.add_subparsers(dest="buyback_shop_command", required=True)
+
+    shop_add = shop_sub.add_parser("add", help="Add buyback shop")
+    shop_add.add_argument("--shop-name", required=True, help="shop name")
+    shop_add.add_argument("--accepts-sealed", action="store_true", help="shop accepts sealed items")
+    shop_add.add_argument("--accepts-opened-unused", action="store_true", help="shop accepts opened unused items")
+    shop_add.add_argument("--no-accepts-used", action="store_true", help="shop does not accept used items")
+    shop_add.add_argument("--supports-grade-pricing", action="store_true", help="shop uses grade pricing")
+    shop_add.add_argument("--supports-junk", action="store_true", help="shop accepts junk items")
+    shop_add.add_argument("--notes", default=None, help="optional notes")
+    shop_add.add_argument("--inactive", action="store_true", help="create as inactive shop")
+
+    shop_list = shop_sub.add_parser("list", help="List buyback shops")
+    shop_list.add_argument("--active-only", action="store_true", help="show active shops only")
+    shop_list.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+
+    shop_update = shop_sub.add_parser("update", help="Update buyback shop")
+    shop_update.add_argument("--shop", required=True, help="shop id")
+    shop_update.add_argument("--shop-name", default=None, help="new shop name")
+    shop_update.add_argument("--accepts-sealed", action="store_true", default=None, help="enable sealed support")
+    shop_update.add_argument("--no-accepts-sealed", action="store_true", default=None, help="disable sealed support")
+    shop_update.add_argument("--accepts-opened-unused", action="store_true", default=None, help="enable opened unused support")
+    shop_update.add_argument("--no-accepts-opened-unused", action="store_true", default=None, help="disable opened unused support")
+    shop_update.add_argument("--accepts-used", action="store_true", default=None, help="enable used support")
+    shop_update.add_argument("--no-accepts-used", action="store_true", default=None, help="disable used support")
+    shop_update.add_argument("--supports-grade-pricing", action="store_true", default=None, help="enable grade pricing support")
+    shop_update.add_argument("--no-supports-grade-pricing", action="store_true", default=None, help="disable grade pricing support")
+    shop_update.add_argument("--supports-junk", action="store_true", default=None, help="enable junk support")
+    shop_update.add_argument("--no-supports-junk", action="store_true", default=None, help="disable junk support")
+    shop_update.add_argument("--notes", default=None, help="update notes")
+    shop_update.add_argument("--active", action="store_true", default=None, help="mark active")
+    shop_update.add_argument("--inactive", action="store_true", default=None, help="mark inactive")
+
+    buyback_quote = sub.add_parser("buyback-quote", help="Buyback quote operations")
+    quote_sub = buyback_quote.add_subparsers(dest="buyback_quote_command", required=True)
+
+    quote_set = quote_sub.add_parser("set", help="Insert buyback quote")
+    quote_set.add_argument("--source", required=True, help="item source")
+    quote_set.add_argument("--item-url", required=True, help="item url")
+    quote_set.add_argument("--shop", required=True, help="shop name or id")
+    quote_set.add_argument("--category", required=True, choices=BUYBACK_ITEM_CATEGORIES, help="item category for this quote")
+    quote_set.add_argument("--min", required=True, type=int, dest="quoted_price_min", help="quoted price min")
+    quote_set.add_argument("--max", type=int, default=None, dest="quoted_price_max", help="quoted price max")
+    quote_set.add_argument("--condition-assumption", default=None, help="condition assumption for this quote")
+    quote_set.add_argument("--source-url", default=None, help="source url for quote")
+    quote_set.add_argument("--notes", default=None, help="notes")
+    quote_set.add_argument("--quote-checked-at", default=None, help="checked at in ISO8601")
+
+    quote_list = quote_sub.add_parser("list", help="List buyback quotes for an item")
+    quote_list.add_argument("--source", required=True, help="item source")
+    quote_list.add_argument("--item-url", required=True, help="item url")
+    quote_list.add_argument("--format", default="human", choices=("human", "json"), help="output format")
     return parser
 
 
@@ -113,6 +175,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not ok:
             logging.getLogger(__name__).error("item not found: source=%s item_url=%s", args.source, args.item_url)
             return 1
+        if args.item_category:
+            repo.update_item_category(args.source, args.item_url, args.item_category)
         print(f"updated: source={args.source} item_url={args.item_url} review_status={args.status}")
         return 0
 
@@ -159,6 +223,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         updated = _upsert_day_section(path, args.day, content)
         path.write_text(updated, encoding="utf-8")
         print(f"written: {path}")
+        return 0
+
+    if args.command == "review-status" and args.review_command == "evaluate-exit":
+        service = BuybackEvaluationService(settings=settings, repository=repo)
+        result = service.evaluate_exit(args.source, args.item_url, item_category_override=args.item_category)
+        content = _render_exit_evaluation(result, args.format)
+        _emit_output(content, None)
+        return 0
+
+    if args.command == "buyback-shop" and args.buyback_shop_command == "add":
+        shop_id = repo.add_buyback_shop(
+            shop_name=args.shop_name,
+            accepts_sealed=args.accepts_sealed,
+            accepts_opened_unused=args.accepts_opened_unused,
+            accepts_used=not args.no_accepts_used,
+            supports_grade_pricing=args.supports_grade_pricing,
+            supports_junk=args.supports_junk,
+            notes=args.notes,
+            is_active=not args.inactive,
+        )
+        print(f"created: shop_id={shop_id} shop_name={args.shop_name}")
+        return 0
+
+    if args.command == "buyback-shop" and args.buyback_shop_command == "list":
+        rows = repo.list_buyback_shops(active_only=args.active_only)
+        content = _render_buyback_shops(rows, args.format)
+        _emit_output(content, None)
+        return 0
+
+    if args.command == "buyback-shop" and args.buyback_shop_command == "update":
+        fields = _build_buyback_shop_update_fields(args)
+        ok = repo.update_buyback_shop(int(args.shop), **fields)
+        if not ok:
+            logging.getLogger(__name__).error("shop not found or no updates: shop=%s", args.shop)
+            return 1
+        print(f"updated: shop_id={args.shop}")
+        return 0
+
+    if args.command == "buyback-quote" and args.buyback_quote_command == "set":
+        shop_id = repo.resolve_buyback_shop_id(args.shop)
+        if shop_id is None:
+            logging.getLogger(__name__).error("shop not found: shop=%s", args.shop)
+            return 1
+        quote_id = repo.insert_buyback_quote(
+            source=args.source,
+            item_url=args.item_url,
+            shop_id=shop_id,
+            item_category=args.category,
+            quoted_price_min=args.quoted_price_min,
+            quoted_price_max=args.quoted_price_max,
+            condition_assumption=args.condition_assumption,
+            source_url=args.source_url,
+            notes=args.notes,
+            quote_checked_at=args.quote_checked_at,
+        )
+        print(f"created: quote_id={quote_id} shop_id={shop_id} item_url={args.item_url}")
+        return 0
+
+    if args.command == "buyback-quote" and args.buyback_quote_command == "list":
+        rows = repo.list_buyback_quotes(args.source, args.item_url)
+        content = _render_buyback_quotes(rows, args.format)
+        _emit_output(content, None)
         return 0
 
     return 0
@@ -407,6 +533,80 @@ def _render_performance(summary: dict, output_format: str) -> str:
     return "\n".join(lines)
 
 
+def _render_buyback_shops(rows: list[dict], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(rows, ensure_ascii=False)
+    if not rows:
+        return "no shops"
+    lines = []
+    for row in rows:
+        lines.append(
+            f"[{row['id']}] {row['shop_name']} "
+            f"active={'yes' if row['is_active'] else 'no'} "
+            f"sealed={'yes' if row['accepts_sealed'] else 'no'} "
+            f"opened_unused={'yes' if row['accepts_opened_unused'] else 'no'} "
+            f"used={'yes' if row['accepts_used'] else 'no'} "
+            f"grade={'yes' if row['supports_grade_pricing'] else 'no'} "
+            f"junk={'yes' if row['supports_junk'] else 'no'} "
+            f"notes={row.get('notes') or '-'}"
+        )
+    return "\n".join(lines)
+
+
+def _render_buyback_quotes(rows: list[dict], output_format: str) -> str:
+    if output_format == "json":
+        return json.dumps(rows, ensure_ascii=False)
+    if not rows:
+        return "no quotes"
+    lines = []
+    for row in rows:
+        lines.append(
+            f"[{row['id']}] {row['shop_name']} category={row['item_category']} "
+            f"min={row['quoted_price_min']} max={row.get('quoted_price_max') or '-'} "
+            f"checked_at={row['quote_checked_at']} active={'yes' if row['shop_is_active'] else 'no'} "
+            f"condition={row.get('condition_assumption') or '-'}"
+        )
+    return "\n".join(lines)
+
+
+def _render_exit_evaluation(result, output_format: str) -> str:
+    payload = {
+        "source": result.source,
+        "item_url": result.item_url,
+        "item_category": result.item_category,
+        "compatible_buyback_routes": result.compatible_buyback_routes,
+        "incompatible_buyback_routes": result.incompatible_buyback_routes,
+        "conservative_exit_price": result.conservative_exit_price,
+        "max_purchase_price": result.max_purchase_price,
+        "has_buyback_floor": result.has_buyback_floor,
+        "decision": result.decision,
+        "risk_flags": result.risk_flags,
+        "reason_summary": result.reason_summary,
+        "estimated_fees": result.estimated_fees,
+        "estimated_shipping_cost": result.estimated_shipping_cost,
+        "estimated_buyback_haircut": result.estimated_buyback_haircut,
+        "target_profit": result.target_profit,
+        "stale_quote_found": result.stale_quote_found,
+    }
+    if output_format == "json":
+        return json.dumps(payload, ensure_ascii=False)
+    lines = [
+        f"source: {result.source}",
+        f"item_url: {result.item_url}",
+        f"item_category: {result.item_category or '-'}",
+        f"compatible_buyback_routes: {', '.join(result.compatible_buyback_routes) if result.compatible_buyback_routes else '-'}",
+        f"incompatible_buyback_routes: {', '.join(result.incompatible_buyback_routes) if result.incompatible_buyback_routes else '-'}",
+        f"conservative_exit_price: {result.conservative_exit_price if result.conservative_exit_price is not None else '-'}",
+        f"max_purchase_price: {result.max_purchase_price if result.max_purchase_price is not None else '-'}",
+        f"has_buyback_floor: {'yes' if result.has_buyback_floor else 'no'}",
+        f"decision: {result.decision}",
+        f"risk_flags: {', '.join(result.risk_flags) if result.risk_flags else '-'}",
+        f"stale_quote_found: {'yes' if result.stale_quote_found else 'no'}",
+        f"reason_summary: {result.reason_summary}",
+    ]
+    return "\n".join(lines)
+
+
 def _build_daily_notes_section(day: int, target_date: str, rows: list[dict]) -> str:
     status_groups = {"good": [], "bad": [], "watched": [], "bought": []}
     memo_lines: list[str] = []
@@ -487,6 +687,39 @@ def _item_id_from_url(item_url: str) -> str:
 def _checkbox_line(checked: bool, label: str) -> str:
     mark = "x" if checked else " "
     return f"- [{mark}] {label}"
+
+
+def _build_buyback_shop_update_fields(args) -> dict:
+    fields: dict[str, object] = {}
+    if args.shop_name is not None:
+        fields["shop_name"] = args.shop_name
+    if args.accepts_sealed:
+        fields["accepts_sealed"] = True
+    elif args.no_accepts_sealed:
+        fields["accepts_sealed"] = False
+    if args.accepts_opened_unused:
+        fields["accepts_opened_unused"] = True
+    elif args.no_accepts_opened_unused:
+        fields["accepts_opened_unused"] = False
+    if args.accepts_used:
+        fields["accepts_used"] = True
+    elif args.no_accepts_used:
+        fields["accepts_used"] = False
+    if args.supports_grade_pricing:
+        fields["supports_grade_pricing"] = True
+    elif args.no_supports_grade_pricing:
+        fields["supports_grade_pricing"] = False
+    if args.supports_junk:
+        fields["supports_junk"] = True
+    elif args.no_supports_junk:
+        fields["supports_junk"] = False
+    if args.notes is not None:
+        fields["notes"] = args.notes
+    if args.active:
+        fields["is_active"] = True
+    elif args.inactive:
+        fields["is_active"] = False
+    return fields
 
 
 def _upsert_day_section(path: Path, day: int, section: str) -> str:

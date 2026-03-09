@@ -74,6 +74,10 @@ python -m app.main run-once --config config.yaml --env .env
 - `max_detail_per_listing_page: 3`
 - `max_notifications_per_run: 3`
 - `notification_mode: detailed` (`concise` で短文通知)
+- `buyback.target_profit_yen: 5000`
+- `buyback.estimated_shipping_cost_yen: 750`
+- `buyback.default_haircut_yen: 2000` (`supports_grade_pricing` の店は追加で `1000` 円控除)
+- `buyback.stale_quote_days: 14`
 
 ## テスト
 ```bash
@@ -85,6 +89,7 @@ pytest -q
 ```bash
 python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status good
 python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status watched --note "IMEI未確認のため保留"
+python -m app.main review-status set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --status watched --item-category used
 ```
 
 結果記録:
@@ -129,6 +134,26 @@ python -m app.main review-status summary --timeseries weekly --format csv --outp
 ```bash
 python -m app.main review-status list --format csv --limit 100 --output reports/recent_items.csv
 python -m app.main review-status list --format json --status good --output reports/good_items.json
+```
+
+## buyback 運用コマンド
+買取店マスタ:
+```bash
+python -m app.main buyback-shop add --shop-name "Janpara Used" --accepts-opened-unused --supports-grade-pricing
+python -m app.main buyback-shop list
+python -m app.main buyback-shop update --shop 1 --inactive --notes "一時停止"
+```
+
+買取価格記録:
+```bash
+python -m app.main buyback-quote set --source mercari_public --item-url "https://jp.mercari.com/item/m123" --shop "Janpara Used" --category used --min 61500 --max 65500 --condition-assumption "Bランク想定"
+python -m app.main buyback-quote list --source mercari_public --item-url "https://jp.mercari.com/item/m123"
+```
+
+出口評価:
+```bash
+python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123"
+python -m app.main review-status evaluate-exit --source mercari_public --item-url "https://jp.mercari.com/item/m123" --item-category used --format json
 ```
 
 ## cron 実行例
