@@ -187,6 +187,8 @@ python -m app.main review-status ui
 - `review-status list --with-buyback-floor` で `buyback_floor` / `floor_gap` / `decision` / `stale_quote_found` を一覧表示できます
 - `review-status imei-show` で抽出済み IMEI 候補と `naoseru` の確認URLを表示できます
 - `review-status list` と `review-status ui` では `imei_count` と先頭 IMEI を表示します
+- `review-status ui` では IMEI を readonly input で表示するので、そのままコピーして checker に貼れます
+- Telegram 通知には IMEI 件数 / 先頭 IMEI / `naoseru` の checker URL を追加しています（IMEI 抽出時のみ）
 - Telegram 通知には最悪出口メモを 1 行追加しています
   - 例: `最悪出口: IOSYS下限 27,000円 / 現在価格差 +6,050円 / 最新`
 

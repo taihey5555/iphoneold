@@ -69,11 +69,13 @@ class TelegramNotifier:
     def build_message(self, item: ScoredItem, reason_summary: str, buyback_snapshot: dict | None = None) -> str:
         reason_ja = _to_ja_reason(reason_summary)
         memo = _build_buyback_memo(buyback_snapshot)
+        imei_block = _build_imei_block(item)
         if self.mode == "concise":
             message = (
                 f"[中古スマホ通知]\n"
                 f"{item.raw.title}\n"
                 f"価格: {item.raw.listed_price}円 / 想定粗利: {item.estimated_profit}円 / 危険度スコア: {item.normalized.risk_score}\n"
+                f"{imei_block}"
                 f"通知理由: {reason_ja}\n"
                 f"{item.raw.item_url}"
             )
@@ -94,6 +96,7 @@ class TelegramNotifier:
             f"売価根拠: {resale_basis}\n"
             f"危険フラグ: {risk_flags}\n"
             f"危険度スコア内訳: {risk_breakdown} (合計={item.normalized.risk_score})\n"
+            f"{imei_block}"
             f"URL: {item.raw.item_url}\n"
             f"通知理由: {reason_ja}"
         )
@@ -145,3 +148,16 @@ def _build_buyback_memo(snapshot: dict | None) -> str | None:
         gap_int = int(gap)
         gap_text = f"+{gap_int:,}円" if gap_int > 0 else f"{gap_int:,}円"
     return f"最悪出口: IOSYS下限 {int(floor):,}円 / 現在価格差 {gap_text} / {freshness}"
+
+
+def _build_imei_block(item: ScoredItem) -> str:
+    imei_candidates = item.normalized.imei_candidates or []
+    imei_count = len(imei_candidates)
+    if not imei_count:
+        return ""
+    first_imei = imei_candidates[0]
+    return (
+        f"IMEI件数: {imei_count}\n"
+        f"先頭IMEI: {first_imei}\n"
+        "IMEI確認: https://naoseru.com/ja/imei-checker/\n"
+    )

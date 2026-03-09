@@ -36,14 +36,19 @@ def _item() -> ScoredItem:
 
 
 def test_detailed_message_contains_breakdown_and_buyback_memo():
+    item = _item()
+    item.normalized.imei_candidates = ["356789012345678", "356789012345679"]
     notifier = TelegramNotifier(mode="detailed")
     msg = notifier.build_message(
-        _item(),
+        item,
         "notified_reason(profit>=3000, risk<=4, network_restriction_unknown)",
         buyback_snapshot={"buyback_floor": 27000, "floor_gap": -32000, "stale_quote_found": False},
     )
     assert "粗利根拠:" in msg
     assert "危険度スコア内訳:" in msg
+    assert "IMEI件数: 2" in msg
+    assert "先頭IMEI: 356789012345678" in msg
+    assert "IMEI確認: https://naoseru.com/ja/imei-checker/" in msg
     assert "通知理由:" in msg
     assert "ネットワーク制限不明" in msg
     assert "想定粗利>=" in msg
@@ -63,3 +68,4 @@ def test_concise_message_is_short_and_shows_missing_buyback_floor():
     assert "通知理由:" in msg
     assert "危険度スコア" in msg
     assert "最悪出口: buyback floor なし" in msg
+    assert "IMEI件数:" not in msg
