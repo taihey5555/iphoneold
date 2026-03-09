@@ -140,8 +140,10 @@ python -m app.main review-status list --format json --status good --output repor
 ## 実装済み要件
 - Scrapling を使う取得抽象 (`app/repositories/fetcher.py`)
 - サイト別 parser 分離 (`app/parsers/mercari_public.py`)
+- `mercari_public` は商品説明DOMを優先し、メルカリ汎用 `meta description` は説明文として極力採用しない
 - 正規化項目抽出 (`app/extractors/rule_based.py`)
 - 除外ルール適用 (`app/services/filtering.py`)
+- `画面割れなし` `修理歴なし` `付属品は箱のみ` のような否定/付属品文脈での誤除外を抑制
 - 粗利推定 (`app/scoring/profit_estimator.py`)
 - 危険フラグと risk score (`app/extractors/rule_based.py`)
 - Telegram 通知 (`app/notifiers/telegram.py`)
@@ -157,6 +159,7 @@ python -m app.main review-status list --format json --status good --output repor
 - メルカリはフロント変更頻度が高く、セレクタ/JSON-LD依存のため将来の破損余地がある
 - 価格推定はルールベースで、相場急変や季節性を十分反映しない
 - `risk_flags` は文面依存のため、出品者の表現ゆれに対して誤判定の余地がある
+- 否定表現や付属品説明の扱いは改善済みだが、表現ゆれ次第では誤検知が残る
 - 類似重複抑制はキー近似（モデル/容量/価格帯）であり、完全一致保証ではない
 - 動的取得は遅く、環境依存の失敗（タイムアウト・ブラウザ依存）が発生しうる
 
