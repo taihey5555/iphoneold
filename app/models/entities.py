@@ -34,6 +34,7 @@ class RawListing:
 class NormalizedFields:
     model_name: str | None = None
     storage_gb: int | None = None
+    imei_candidates: list[str] = field(default_factory=list)
     color: str | None = None
     carrier: str | None = None
     sim_free_flag: bool | None = None

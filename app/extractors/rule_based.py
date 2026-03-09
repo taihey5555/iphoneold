@@ -32,6 +32,7 @@ class RuleBasedExtractor(Extractor):
         norm = NormalizedFields()
         norm.model_name = _extract_model(text)
         norm.storage_gb = _extract_storage(text)
+        norm.imei_candidates = _extract_imei_candidates(text)
         norm.color = _extract_color(text)
         norm.carrier = _extract_carrier(text)
         norm.sim_free_flag = _extract_sim_free(lower)
@@ -198,6 +199,19 @@ def _extract_condition_flags(text: str) -> list[str]:
         if contains_any(text, words):
             flags.append(key)
     return flags
+
+
+def _extract_imei_candidates(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", text)
+    values = re.findall(r"(?<!\d)(\d{15})(?!\d)", normalized)
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
 
 
 def _risk_flags(norm: NormalizedFields, text: str) -> tuple[list[str], int, dict[str, int]]:

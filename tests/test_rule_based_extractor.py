@@ -137,3 +137,9 @@ def test_model_extraction_supports_12_and_16_series():
     item_16 = _raw("iphone16 pro 256GB", "")
     norm_16 = RuleBasedExtractor().extract(item_16)
     assert norm_16.model_name == "iPhone 16 Pro"
+
+
+def test_extract_imei_candidates_dedupes_15_digit_values():
+    item = _raw("iPhone 14 128GB", "IMEI 356789012345678 / 356789012345678 / 12345678901234")
+    norm = RuleBasedExtractor().extract(item)
+    assert norm.imei_candidates == ["356789012345678"]

@@ -314,19 +314,21 @@ class ItemRepository:
         with self._connect() as conn:
             rows = conn.execute(
                 f"""
-                SELECT
-                  source, item_url, title, description, listed_price, estimated_profit,
-                  risk_score, review_status, review_note, exit_channel, outcome_status,
-                  actual_sale_price, actual_profit, outcome_note, fetched_at, exclude_reason, item_category
-                FROM items
-                {where_sql}
-                ORDER BY fetched_at DESC
-                LIMIT ?
+                  SELECT
+                    source, item_url, title, description, listed_price, estimated_profit,
+                    risk_score, review_status, review_note, exit_channel, outcome_status,
+                    actual_sale_price, actual_profit, outcome_note, fetched_at, exclude_reason, item_category, normalized_json
+                  FROM items
+                  {where_sql}
+                  ORDER BY fetched_at DESC
+                  LIMIT ?
                 """,
                 params,
             ).fetchall()
         out = []
         for row in rows:
+            normalized = json.loads(row[17] or "{}")
+            imei_candidates = normalized.get("imei_candidates") or []
             out.append(
                 {
                     "source": row[0],
@@ -345,10 +347,28 @@ class ItemRepository:
                     "fetched_at": row[14],
                     "exclude_reason": row[15],
                     "item_category": row[16],
+                    "imei_candidates": imei_candidates,
+                    "imei_count": len(imei_candidates),
+                    "imei_first": imei_candidates[0] if imei_candidates else None,
                     "item_category_hint": detect_item_category_hint(row[2], row[3]),
                 }
             )
         return out
+
+    def get_item_imei_candidates(self, source: str, item_url: str) -> list[str]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT normalized_json
+                FROM items
+                WHERE source = ? AND item_url = ?
+                """,
+                (source, item_url),
+            ).fetchone()
+        if not row:
+            return []
+        normalized = json.loads(row[0] or "{}")
+        return list(normalized.get("imei_candidates") or [])
 
     def summarize_item_category_state(self) -> dict:
         with self._connect() as conn:
@@ -1317,6 +1337,7 @@ def _norm_to_dict(norm: NormalizedFields) -> dict:
     return {
         "model_name": norm.model_name,
         "storage_gb": norm.storage_gb,
+        "imei_candidates": norm.imei_candidates,
         "color": norm.color,
         "carrier": norm.carrier,
         "sim_free_flag": norm.sim_free_flag,

@@ -169,6 +169,7 @@ item_category レビュー:
 python -m app.main review-status item-category-check
 python -m app.main review-status list --missing-item-category --notified-only --format human
 python -m app.main review-status list --notified-only --with-buyback-floor --format human --limit 20
+python -m app.main review-status imei-show --source mercari_public --item-url "https://jp.mercari.com/item/m123"
 python -m app.main review-status ui
 ```
 
@@ -184,6 +185,8 @@ python -m app.main review-status ui
 - `review-status ui` はローカルの最小レビューUIです。`notified only` が既定で有効です
 - `review-status list --notified-only` で通知済み item だけに絞れます
 - `review-status list --with-buyback-floor` で `buyback_floor` / `floor_gap` / `decision` / `stale_quote_found` を一覧表示できます
+- `review-status imei-show` で抽出済み IMEI 候補と `naoseru` の確認URLを表示できます
+- `review-status list` と `review-status ui` では `imei_count` と先頭 IMEI を表示します
 - Telegram 通知には最悪出口メモを 1 行追加しています
   - 例: `最悪出口: IOSYS下限 27,000円 / 現在価格差 +6,050円 / 最新`
 

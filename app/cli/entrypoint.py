@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_cmd.add_argument("--format", default="tsv", choices=("human", "tsv", "csv", "json"), help="output format")
     list_cmd.add_argument("--output", default=None, help="write output to file")
 
+    imei_cmd = review_sub.add_parser("imei-show", help="Show extracted IMEI candidates for an item")
+    imei_cmd.add_argument("--source", required=True, help="item source")
+    imei_cmd.add_argument("--item-url", required=True, help="item url")
+    imei_cmd.add_argument("--format", default="human", choices=("human", "json"), help="output format")
+
     summary_cmd = review_sub.add_parser("summary", help="Summary metrics by review_status")
     summary_cmd.add_argument("--source", default=None, help="filter by source")
     summary_cmd.add_argument("--status", default=None, choices=REVIEW_STATUSES, help="filter by review status")
@@ -233,6 +238,26 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "review-status" and args.review_command == "item-category-check":
         content = _render_item_category_check(repo.summarize_item_category_state(), args.format)
         _emit_output(content, None)
+        return 0
+
+    if args.command == "review-status" and args.review_command == "imei-show":
+        imei_candidates = repo.get_item_imei_candidates(args.source, args.item_url)
+        payload = {
+            "source": args.source,
+            "item_url": args.item_url,
+            "imei_candidates": imei_candidates,
+            "check_url": "https://naoseru.com/ja/imei-checker/",
+        }
+        if args.format == "json":
+            print(json.dumps(payload, ensure_ascii=False))
+        else:
+            lines = ["imei_candidates:"]
+            if imei_candidates:
+                lines.extend(f"- {value}" for value in imei_candidates)
+            else:
+                lines.append("- none")
+            lines.extend(["", "check_url:", payload["check_url"]])
+            print("\n".join(lines))
         return 0
 
     if args.command == "review-status" and args.review_command == "ui":
@@ -400,6 +425,8 @@ def _render_recent_items(
         "estimated_profit",
         "risk_score",
         "fetched_at",
+        "imei_count",
+        "imei_first",
         "item_category_hint",
         "title",
         "item_url",
@@ -432,7 +459,7 @@ def _render_recent_items(
                 f"[{idx}] {r['title']} | status={r['review_status']} | hint={r.get('item_category_hint') or '-'} | category={r.get('item_category') or '-'}"
             )
             lines.append(
-                f"    price={r['listed_price']} profit={r['estimated_profit']} risk={r['risk_score']} fetched_at={r['fetched_at']}"
+                f"    price={r['listed_price']} profit={r['estimated_profit']} risk={r['risk_score']} fetched_at={r['fetched_at']} imei_count={r.get('imei_count', 0)}"
             )
             if with_buyback_floor:
                 lines.append(
@@ -443,6 +470,8 @@ def _render_recent_items(
                     f"stale_quote_found={_bool_text(r.get('buyback_stale_quote_found'))}"
                 )
             lines.append(f"    url={r['item_url']}")
+            if r.get("imei_first"):
+                lines.append(f"    imei={r['imei_first']} check_url=https://naoseru.com/ja/imei-checker/")
             if r.get("review_note"):
                 lines.append(f"    note={r['review_note']}")
             if with_exit_eval:
@@ -462,7 +491,7 @@ def _render_recent_items(
         for r in rows:
             writer.writerow({k: r.get(k, "") for k in fields})
         return buf.getvalue().strip()
-    header = "source\treview_status\treview_note\texit_channel\toutcome_status\tactual_sale_price\tactual_profit\toutcome_note\tprice\tprofit\trisk\tfetched_at\titem_category_hint\ttitle\titem_url"
+    header = "source\treview_status\treview_note\texit_channel\toutcome_status\tactual_sale_price\tactual_profit\toutcome_note\tprice\tprofit\trisk\tfetched_at\timei_count\timei_first\titem_category_hint\ttitle\titem_url"
     if with_buyback_floor:
         header += "\tbuyback_floor\tfloor_gap\tbuyback_decision\tbuyback_stale_quote_found"
     if with_exit_eval:
@@ -472,7 +501,7 @@ def _render_recent_items(
         line = (
             f"{r['source']}\t{r['review_status']}\t{r.get('review_note') or ''}\t{r.get('exit_channel') or ''}\t"
             f"{r.get('outcome_status') or ''}\t{r.get('actual_sale_price') or ''}\t{r.get('actual_profit') or ''}\t"
-            f"{r.get('outcome_note') or ''}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r.get('item_category_hint') or ''}\t{r['title']}\t{r['item_url']}"
+            f"{r.get('outcome_note') or ''}\t{r['listed_price']}\t{r['estimated_profit']}\t{r['risk_score']}\t{r['fetched_at']}\t{r.get('imei_count', 0)}\t{r.get('imei_first') or ''}\t{r.get('item_category_hint') or ''}\t{r['title']}\t{r['item_url']}"
         )
         if with_buyback_floor:
             line += (

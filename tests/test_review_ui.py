@@ -23,7 +23,12 @@ def _insert_item(db_path, item_url: str, *, description: str = "", review_status
         image_urls=[],
         fetched_at=datetime.now(timezone.utc),
     )
-    item = CandidateItem(raw=raw, normalized=NormalizedFields(model_name="iPhone 14", storage_gb=128), exclude_reason=None)
+    imei_candidates = ["356789012345678"] if "IMEI" in description else []
+    item = CandidateItem(
+        raw=raw,
+        normalized=NormalizedFields(model_name="iPhone 14", storage_gb=128, imei_candidates=imei_candidates),
+        exclude_reason=None,
+    )
     repo.upsert_scored_item(ProfitEstimator([]).score(item))
     repo.update_review_status("mercari_public", item_url, review_status)
     return repo
@@ -103,3 +108,14 @@ def test_review_ui_notified_only_hides_unnotified_items(tmp_path):
     response = _call_app(app, "GET", "/", "notified_only=1&missing_only=1&status_focus=1&hint_first=1&limit=20")
     assert "https://jp.mercari.com/item/u3" in response["body"]
     assert "https://jp.mercari.com/item/u4" not in response["body"]
+
+
+def test_review_ui_shows_imei_and_checker_link(tmp_path):
+    db_path = tmp_path / "test.db"
+    repo = _insert_item(db_path, "https://jp.mercari.com/item/u5", description="IMEI 356789012345678", review_status="watched")
+    repo.mark_notified("mercari_public", "https://jp.mercari.com/item/u5")
+    app = ReviewUIApp(repo)
+
+    response = _call_app(app, "GET", "/", "notified_only=1&missing_only=0&status_focus=0&hint_first=0&limit=20")
+    assert "IMEI=356789012345678" in response["body"]
+    assert "https://naoseru.com/ja/imei-checker/" in response["body"]

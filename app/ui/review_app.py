@@ -165,9 +165,11 @@ def _render_card(row: dict, *, missing_only: bool, status_focus: bool, hint_firs
     item_category = escape(str(row.get("item_category") or "-"))
     review_status = escape(str(row.get("review_status") or "-"))
     review_note = escape(str(row.get("review_note") or ""))
+    imei_first = escape(str(row.get("imei_first") or ""))
+    imei_count = int(row.get("imei_count") or 0)
     meta = (
         f"price={row['listed_price']} profit={row['estimated_profit']} "
-        f"risk={row['risk_score']} fetched_at={escape(str(row['fetched_at']))}"
+        f"risk={row['risk_score']} fetched_at={escape(str(row['fetched_at']))} imei_count={imei_count}"
     )
     return f"""
 <div class="card">
@@ -175,6 +177,7 @@ def _render_card(row: dict, *, missing_only: bool, status_focus: bool, hint_firs
   <div class="meta">status={review_status} | current_category={item_category} | <span class="hint">hint={hint}</span></div>
   <div class="meta">{meta}</div>
   <div><a href="{item_url}" target="_blank" rel="noreferrer">Open item URL</a></div>
+  {f'<div class="meta">IMEI={imei_first} / <a href="https://naoseru.com/ja/imei-checker/" target="_blank" rel="noreferrer">IMEI checker</a></div>' if imei_first else ''}
   {f'<div class="meta">note={review_note}</div>' if review_note else ''}
   <div class="actions">
     {_post_button('/item-category', source, item_url, query, 'item_category', 'used', 'used')}

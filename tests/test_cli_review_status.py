@@ -352,6 +352,69 @@ def test_cli_review_status_list_missing_item_category_and_exit_eval(tmp_path, ca
     assert used_floor_row["buyback_stale_quote_found"] is False
 
 
+def test_cli_review_status_imei_show_and_list_visibility(tmp_path, capsys):
+    config_path = tmp_path / "config.yaml"
+    db_path = tmp_path / "test.db"
+    _write_test_config(config_path, db_path)
+    repo = ItemRepository(str(db_path))
+    raw = RawListing(
+        source="mercari_public",
+        item_url="https://jp.mercari.com/item/imei1",
+        title="iPhone 14 128GB",
+        description="IMEI 356789012345678",
+        listed_price=50000,
+        shipping_fee=0,
+        posted_at=None,
+        seller_name="seller",
+        image_urls=[],
+        fetched_at=datetime.now(timezone.utc),
+    )
+    item = CandidateItem(raw=raw, normalized=NormalizedFields(model_name="iPhone 14", storage_gb=128, imei_candidates=["356789012345678"]), exclude_reason=None)
+    repo.upsert_scored_item(ProfitEstimator([]).score(item))
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "imei-show",
+                "--source",
+                "mercari_public",
+                "--item-url",
+                "https://jp.mercari.com/item/imei1",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["imei_candidates"] == ["356789012345678"]
+    assert payload["check_url"] == "https://naoseru.com/ja/imei-checker/"
+
+    assert (
+        main(
+            [
+                "--config",
+                str(config_path),
+                "--env",
+                str(tmp_path / ".env"),
+                "review-status",
+                "list",
+                "--format",
+                "human",
+            ]
+        )
+        == 0
+    )
+    human = capsys.readouterr().out
+    assert "imei_count=1" in human
+    assert "imei=356789012345678 check_url=https://naoseru.com/ja/imei-checker/" in human
+
+
 def test_cli_review_status_list_notified_only(tmp_path, capsys):
     config_path = tmp_path / "config.yaml"
     db_path = tmp_path / "test.db"
